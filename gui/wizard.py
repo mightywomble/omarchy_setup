@@ -607,9 +607,19 @@ class WizardApp(Adw.Application):
         self.next_btn.add_css_class("om-nav-btn-primary")
         self.next_btn.connect("clicked", self._on_next)
 
+        # Apply button — shown only on the last (review) page. Red until a
+        # config is saved, then green.
+        self.nav_apply_btn = Gtk.Button(label="Apply now")
+        self.nav_apply_btn.add_css_class("om-nav-btn")
+        self.nav_apply_btn.add_css_class("om-nav-btn-danger")
+        self.nav_apply_btn.connect("clicked", self._on_apply_now)
+        self.nav_apply_btn.set_sensitive(False)
+        self.nav_apply_btn.set_visible(False)
+
         nav.append(self.step_label)
         nav.append(self.back_btn)
         nav.append(self.next_btn)
+        nav.append(self.nav_apply_btn)
         outer.append(nav)
 
         self._update_nav()
@@ -624,8 +634,10 @@ class WizardApp(Adw.Application):
         self.back_btn.set_visible(self.current_page > 0)
         if self.current_page == total - 1:
             self.next_btn.set_label("Save config…")
+            self.nav_apply_btn.set_visible(True)
         else:
             self.next_btn.set_label("Next")
+            self.nav_apply_btn.set_visible(False)
         self.stack.set_visible_child_name(f"page-{self.current_page}")
         # Sync the ollama-off notice on the GPU Models page.
         gpu_page_idx = total - 2  # page before review
@@ -1626,23 +1638,6 @@ class WizardApp(Adw.Application):
                                       spacing=6)
         page.append(self.review_content)
 
-        # Save button.
-        save_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10,
-                           margin_top=16)
-        self.save_btn = Gtk.Button(label="Save config…")
-        self.save_btn.add_css_class("om-nav-btn")
-        self.save_btn.add_css_class("om-nav-btn-primary")
-        self.save_btn.connect("clicked", self._on_save_config)
-        save_box.append(self.save_btn)
-
-        self.apply_btn = Gtk.Button(label="Apply now")
-        self.apply_btn.add_css_class("om-nav-btn")
-        self.apply_btn.connect("clicked", self._on_apply_now)
-        self.apply_btn.set_sensitive(False)
-        save_box.append(self.apply_btn)
-
-        page.append(save_box)
-
         self.save_status = Gtk.Label(label="")
         self.save_status.set_xalign(0)
         self.save_status.set_margin_top(8)
@@ -1762,7 +1757,7 @@ class WizardApp(Adw.Application):
 
     # --- save & apply ---
 
-    def _on_save_config(self):
+    def _on_save_config(self, _btn=None):
         config = build_config(
             self.selected_categories,
             self.plugin_states,
@@ -1794,7 +1789,9 @@ class WizardApp(Adw.Application):
                 encoding="utf-8",
             )
             self.saved_config_path = path
-            self.apply_btn.set_sensitive(True)
+            self.nav_apply_btn.set_sensitive(True)
+            self.nav_apply_btn.remove_css_class("om-nav-btn-danger")
+            self.nav_apply_btn.add_css_class("om-nav-btn-primary")
             self.save_status.set_text(
                 f"Saved to: {path}\n\nApply with:\n"
                 f"  {self.setup_dir}/apply.sh --myconfig {shlex.quote(path)}"

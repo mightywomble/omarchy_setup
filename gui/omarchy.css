@@ -199,6 +199,17 @@ window.om-wizard .om-scrolled {
   background-color: alpha(@om_accent, 0.35);
 }
 
+.om-nav-btn-danger {
+  background-color: alpha(@om_red, 0.5);
+  color: @om_bright_fg;
+}
+.om-nav-btn-danger:hover {
+  background-color: alpha(@om_red, 0.7);
+}
+.om-nav-btn-danger:disabled {
+  background-color: alpha(@om_red, 0.3);
+}
+
 /* --- add-plugin row --- */
 .om-add-entry {
   border-radius: 8px;
