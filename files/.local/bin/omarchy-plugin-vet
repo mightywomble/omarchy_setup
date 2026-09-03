@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# omarchy-plugin-vet — security vetting for an Omarchy shell plugin.
+#
+# Omarchy plugins are QML/JS that run UNSANDBOXED with your user permissions in the
+# shared Quickshell process, and the plugin marketplace "validates listings, not
+# plugin security". This script surfaces supply-chain and code signals so you can
+# make an informed trust decision. It does NOT prove a plugin is safe — a subtly
+# malicious but well-packaged plugin can pass every check. Use it to triage, then
+# read the code yourself.
+#
+# Usage:
+#   omarchy-plugin-vet <git-url>     vet a remote plugin BEFORE installing (shallow clone to a temp dir)
+#   omarchy-plugin-vet <plugin-id>   vet an already-installed plugin in ~/.config/omarchy/plugins/<id>
+#   omarchy-plugin-vet --help
+#
+# Checks (each prints PASS/WARN/INFO/FAIL):
+#   git-meta     repo age, last commit, author count, remote URL
+#   scorecard    OpenSSF Scorecard (CLI if installed, else REST API, else a web link)
+#   binaries     checked-in executable/binary artifacts
+#   primitives   QML/JS network/exec/eval primitives that warrant human review
+#   manifest     manifest.json summary + omarchy plugin validate
+#   qmllint      qmllint against the Omarchy shell imports (if available)
+#   osv          osv-scanner dependency CVE scan (if installed)
+#
+# Exit codes: 0 = no high-risk findings (warnings may remain; always read the report)
+#             2 = high-risk finding (checked-in binary artifact, missing manifest,
+#                 or Scorecard Dangerous-Workflow score of 1)
+#
+# Install more of the optional tools for fuller coverage:
+#   go install github.com/ossf/scorecard/v5/cmd/scorecard@latest
+#   go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+set -o pipefail
+
+PLUGIN_DIR=""
+REMOTE_URL=""
+TMP_CLONE=""
+
+cleanup() { [[ -n "$TMP_CLONE" && -d "$TMP_CLONE" ]] && rm -rf "$TMP_CLONE"; }
+trap cleanup EXIT
+
+# ---- output helpers ----
+if [[ -t 1 ]]; then
+  C_PASS=$'\033[32m'; C_WARN=$'\033[33m'; C_FAIL=$'\033[31m'; C_INFO=$'\033[36m'; C_RST=$'\033[0m'
+else
+  C_PASS=""; C_WARN=""; C_FAIL=""; C_INFO=""; C_RST=""
+fi
+pass() { printf '%s[PASS]%s %s\n' "$C_PASS" "$C_RST" "$1"; }
+warn() { printf '%s[WARN]%s %s\n' "$C_WARN" "$C_RST" "$1"; }
+fail() { printf '%s[FAIL]%s %s\n' "$C_FAIL" "$C_RST" "$1"; }
+info() { printf '%s[INFO]%s %s\n' "$C_INFO" "$C_RST" "$1"; }
+section() { printf '\n%s=== %s ===%s\n' "$C_INFO" "$1" "$C_RST"; }
+high_risk=0
+
+# ---- arg parsing ----
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,26p' "$0"; exit 0 ;;
+  "")
+    echo "Usage: omarchy-plugin-vet <git-url|plugin-id>" >&2
+    exit 1 ;;
+esac
+ARG="$1"
+
+if [[ "$ARG" == *://* || "$ARG" == *.git || "$ARG" == git@* ]]; then
+  REMOTE_URL="$ARG"
+  TMP_CLONE="$(mktemp -d)"
+  info "Shallow-cloning $REMOTE_URL -> $TMP_CLONE ..."
+  if git clone --depth 1 "$REMOTE_URL" "$TMP_CLONE" >/dev/null 2>&1; then
+    PLUGIN_DIR="$TMP_CLONE"
+  else
+    git clone --depth 1 "$REMOTE_URL" "$TMP_CLONE" 2>&1 | sed 's/^/  /'
+    fail "git clone failed"; exit 2
+  fi
+else
+  PLUGIN_DIR="$HOME/.config/omarchy/plugins/$ARG"
+  if [[ ! -d "$PLUGIN_DIR" ]]; then
+    fail "plugin not found: $PLUGIN_DIR"
+    echo "  pass a git URL to vet before installing, or an installed plugin id" >&2
+    exit 1
+  fi
+  info "Vetting installed plugin: $PLUGIN_DIR"
+  REMOTE_URL="$(git -C "$PLUGIN_DIR" remote get-url origin 2>/dev/null || true)"
+  [[ -n "$REMOTE_URL" ]] && info "Remote: $REMOTE_URL"
+fi
+
+# Extract github.com/<owner>/<repo> from a remote URL (Scorecard covers GitHub only).
+owner_repo=""
+if [[ -n "$REMOTE_URL" ]]; then
+  u="${REMOTE_URL%.git}"
+  u="${u#*github.com}"
+  u="${u#:}"
+  u="${u#/}"
+  owner_repo="$u"
+fi
+
+# ---- git metadata ----
+section "git metadata"
+if git -C "$PLUGIN_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  last_date="$(git -C "$PLUGIN_DIR" log -1 --format=%cd --date=short 2>/dev/null)"
+  commits="$(git -C "$PLUGIN_DIR" rev-list --count HEAD 2>/dev/null || echo "?")"
+  authors="$(git -C "$PLUGIN_DIR" shortlog -sne HEAD 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ -n "$last_date" ]]; then
+    now_s=$(date +%s); then_s=$(date -d "$last_date" +%s 2>/dev/null || echo "$now_s")
+    age_days=$(( (now_s - then_s) / 86400 ))
+  else
+    age_days="?"
+  fi
+  info "last commit: ${last_date:-?} (${age_days} days ago), ${commits} commits, ${authors} author(s)"
+  [[ -n "$TMP_CLONE" ]] && info "(shallow clone — history limited; vet the GitHub repo for full metadata)"
+  [[ "${authors:-0}" =~ ^[0-9]+$ ]] && (( authors <= 1 )) && warn "single-author repo"
+  [[ "${age_days:-999}" =~ ^[0-9]+$ ]] && (( age_days > 365 )) && warn "no commits in over a year (possibly unmaintained)"
+else
+  info "(not a git work tree)"
+fi
+
+# ---- OpenSSF Scorecard ----
+section "OpenSSF Scorecard"
+if [[ -z "$owner_repo" ]]; then
+  info "no GitHub remote detected (Scorecard covers GitHub repos only)"
+elif command -v scorecard >/dev/null 2>&1; then
+  if [[ -z "${GITHUB_AUTH_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
+    GITHUB_AUTH_TOKEN="$(gh auth token 2>/dev/null || true)"; export GITHUB_AUTH_TOKEN
+  fi
+  [[ -z "${GITHUB_AUTH_TOKEN:-}" ]] && warn "GITHUB_AUTH_TOKEN unset; scorecard may hit rate limits"
+  scorecard --repo="github.com/$owner_repo" \
+    --checks=Branch-Protection,Dangerous-Workflow,Binary-Artifacts,Maintained,Code-Review,Pinned-Dependencies,Signed-Releases,Token-Permissions,Vulnerabilities \
+    --format=table 2>&1 | sed 's/^/  /' || warn "scorecard run failed"
+else
+  resp="$(curl -fsS --max-time 15 "https://api.scorecard.dev/v2/projects/github.com/$owner_repo" 2>/dev/null || true)"
+  if [[ -n "$resp" ]]; then
+    info "pre-computed Scorecard (api.scorecard.dev):"
+    printf '%s\n' "$resp" | jq -r '.checks[]? | "  \(.name): \(.score)/10"' 2>/dev/null | head -40 \
+      || printf '%s\n' "$resp" | head -40 | sed 's/^/  /'
+  else
+    info "scorecard CLI not installed and no pre-computed score available"
+    info "View online:  https://scorecard.dev/viewer/?uri=github.com/$owner_repo"
+    info "Install CLI:  go install github.com/ossf/scorecard/v5/cmd/scorecard@latest"
+  fi
+fi
+
+# ---- binary / executable artifacts ----
+section "binary artifacts"
+bins=0
+while IFS= read -r -d '' f; do
+  [[ -x "$f" ]] || continue
+  if ! file "$f" 2>/dev/null | grep -qiE 'text|json|script|ascii|utf-8|xml|unicode'; then
+    printf '  %s\n' "${f#$PLUGIN_DIR/}"
+    bins=$((bins + 1))
+  fi
+done < <(find "$PLUGIN_DIR" -type f -not -path '*/.git/*' -print0 2>/dev/null)
+if (( bins == 0 )); then
+  pass "no executable/binary artifacts found"
+else
+  fail "found $bins binary/executable file(s) — non-reviewable code, review before trusting"
+  high_risk=1
+fi
+
+# ---- dangerous primitives (manual review) ----
+section "dangerous primitives (review manually)"
+matches="$(grep -rEn \
+  'XMLHttpRequest|Qt\.openUrlExternally|\.fetch\(|\bProcess\b|hl\.exec_cmd|exec_cmd|createQmlObject|\beval\(|\bFunction\(|\batob\b|\bbtoa\b|sh -c|bash -c' \
+  --include='*.qml' --include='*.js' --include='*.mjs' --include='*.json' \
+  "$PLUGIN_DIR" 2>/dev/null | grep -v '/.git/' | head -30)"
+if [[ -n "$matches" ]]; then
+  warn "network/exec/eval primitives found — inspect each use:"
+  printf '%s\n' "$matches" | sed 's/^/  /'
+else
+  pass "no obvious network/exec/eval primitives in QML/JS"
+fi
+
+# ---- manifest + omarchy validate ----
+section "manifest"
+mf="$PLUGIN_DIR/manifest.json"
+if [[ -f "$mf" ]]; then
+  if jq -r '"  id: \(.id)\n  name: \(.name)\n  author: \(.author // "?")\n  version: \(.version // "?")\n  license: \(.license // "(none declared)")\n  kinds: \(.kinds | join(", "))"' "$mf" 2>/dev/null; then
+    [[ -z "$(jq -r '.license // empty' "$mf" 2>/dev/null)" ]] && warn "no license declared"
+  else
+    warn "manifest.json is not valid JSON:"; sed 's/^/  /' "$mf"
+  fi
+else
+  fail "manifest.json missing"
+  high_risk=1
+fi
+if command -v omarchy >/dev/null 2>&1; then
+  if omarchy plugin validate "$PLUGIN_DIR" >/dev/null 2>&1; then
+    pass "omarchy plugin validate OK"
+  else
+    warn "omarchy plugin validate reported issues:"
+    omarchy plugin validate "$PLUGIN_DIR" 2>&1 | sed 's/^/  /'
+  fi
+else
+  info "omarchy CLI not on PATH — skipped omarchy plugin validate"
+fi
+
+# ---- qmllint ----
+section "qmllint"
+if command -v qmllint >/dev/null 2>&1; then
+  shellpath="${OMARCHY_PATH:-/usr/share/omarchy}/shell"
+  mapfile -d '' qml_files < <(find "$PLUGIN_DIR" -type f -name '*.qml' -not -path '*/.git/*' -print0 2>/dev/null)
+  if (( ${#qml_files[@]} == 0 )); then
+    info "no .qml files to lint"
+  else
+    out="$(qmllint -I "$shellpath" "${qml_files[@]}" 2>&1 || true)"
+    if [[ -z "$out" ]]; then
+      pass "qmllint clean (${#qml_files[@]} file(s))"
+    else
+      warn "qmllint findings:"; printf '%s\n' "$out" | sed 's/^/  /'
+    fi
+  fi
+else
+  info "qmllint not installed — skipped"
+fi
+
+# ---- osv-scanner ----
+section "osv-scanner (dependencies)"
+if command -v osv-scanner >/dev/null 2>&1; then
+  tmp="$(mktemp)"
+  if osv-scanner scan -r "$PLUGIN_DIR" >"$tmp" 2>&1; then
+    pass "no known vulnerabilities found"
+  else
+    warn "osv-scanner findings (or scan error):"; sed 's/^/  /' "$tmp"
+  fi
+  rm -f "$tmp"
+else
+  info "osv-scanner not installed — skipped"
+  info "Install: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest"
+fi
+
+# ---- recommendation ----
+section "recommendation"
+if (( high_risk )); then
+  fail "high-risk findings above — do NOT enable until they are resolved"
+  exit 2
+fi
+info "No high-risk findings. This is NOT a guarantee of safety."
+info "Omarchy plugins run unsandboxed with your user permissions (can read ~/.ssh, tokens, etc)."
+info "Next steps if you choose to trust it:"
+if [[ -n "$REMOTE_URL" && -n "$TMP_CLONE" ]]; then
+  info "  install:        omarchy plugin add $REMOTE_URL --enable"
+fi
+info "  pin to reviewed commit: git -C ~/.config/omarchy/plugins/<id> checkout <sha>"
+info "  avoid 'omarchy plugin update' for untrusted plugins; re-review diffs on update"
+exit 0

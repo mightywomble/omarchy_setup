@@ -264,6 +264,10 @@ apply_keybindings() {
   else
     echo "  confirm-close disabled in config, skipping omarchy-confirm-close"
   fi
+  # omarchy-plugin-vet: standalone plugin security vetting helper. Not
+  # feature-gated; chmod in case git lost the exec bit on clone.
+  backup_and_copy_file ".local/bin/omarchy-plugin-vet"
+  chmod +x "$HOME/.local/bin/omarchy-plugin-vet"
   backup_and_copy_file ".config/hypr/bindings.lua"
   reload_hyprland
 }

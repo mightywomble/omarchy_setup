@@ -63,7 +63,7 @@ could just mean "wrong hardware", not "removed by you".
   `packages-aur.txt` (AUR, installed with `yay`): zen-browser, vscode
   (Microsoft proprietary `visual-studio-code-bin`), onlyoffice, discord,
   stirling-pdf (desktop wrapper `stirling-pdf-desktop-bin`), termix,
-  element-desktop, tokodon, microsoft-edge, vacuumtube, ytmdesktop,
+  element-desktop, whalebird (Mastodon client `whalebird-bin`), microsoft-edge, vacuumtube, ytmdesktop,
   nextcloud-client, opencode, kubectl, helm, ansible, docker, terraform,
   kdeconnect, tailscale, displaylink (AUR; builds the `evdi` DKMS kernel
   module - requires matching `linux-headers` + `dkms`). After installing,
@@ -186,7 +186,7 @@ choose to save and apply.
   },
   "packages": { "pacman": ["pkg"], "aur": ["pkg"] },
   "configured_packages": {
-    "added":   ["discord", "tokodon", "…"],
+    "added":   ["discord", "whalebird-bin", "…"],
     "aur":     ["zen-browser-bin", "…"],
     "removed": ["chromium", "nvim", "…"]
   }
