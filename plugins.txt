@@ -1,0 +1,17 @@
+# id<TAB>git-url<TAB>enable(true/false)
+# Reinstalled with: omarchy plugin add <git-url> --enable --yes
+ssupt.audio-control	https://github.com/ssupt/omarchy-audio-control.git	true
+tyrsolution.app-launcher	https://github.com/Tyrsolution/omarchy-app-launcher.git	true
+better.displays	https://github.com/nightdevil00/better.displays.git	true
+io.github.krongggggg.caffeine	https://github.com/krongggggg/omarchy-caffeine.git	true
+setup.defaults	https://github.com/nightdevil00/setup.defaults.git	true
+ai.bkblab.displaywright	https://github.com/BlackKingBarOrg/displaywright-shell-plugin.git	true
+plugin.hider	https://github.com/nightdevil00/plugin.hider.git	true
+io.github.sirjul1337.lock-explorer	https://github.com/SirJul1337/omarchy-lock-explorer.git	true
+jankeesvw.notification-center	https://github.com/jankeesvw/omarchy-notification-center.git	true
+yashwanth.link	https://github.com/yashwk/OmaNetHub.git	true
+omaplug	https://github.com/fross100/omaplug.git	true
+im0001gt.screens	https://github.com/IM0001GT/omarchy-screens.git	true
+io.github.elynch303.security-scan	https://github.com/elynch303/security-scan.git	true
+nino.tailscale	https://github.com/OberdanSoldi/omarchy-tailscale.git	true
+io.github.woogy7.workspaces	https://github.com/Woogy7/omarchy-workspace-switcher.git	true

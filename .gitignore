@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files (apply.sh creates *.bak.<timestamp> in $HOME, not here,
+# but ignore them just in case one lands in the repo during testing)
+*.bak.*

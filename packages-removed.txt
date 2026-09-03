@@ -1,0 +1,16 @@
+# Default packages from /usr/share/omarchy/install/omarchy-base.packages
+# that are NOT installed on this machine (deliberately removed).
+# Reapplied with: pacman -R --noconfirm <pkg>
+chromium
+libreoffice-fresh
+localsend
+moonlight-qt
+nvim
+obs-studio
+obsidian
+omacalc
+omacut
+omawrite
+omarchy-nvim
+pinta
+xournalpp

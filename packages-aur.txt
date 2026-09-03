@@ -1,0 +1,16 @@
+# AUR packages added on this machine (beyond Omarchy defaults).
+# Installed by the `install` category via: yay -S --needed
+# One package name per line; blank lines and lines starting with # are ignored.
+# Note: gloview-git is installed by the dedicated `gloview` category (it needs a
+# post-install Hyprland reload), so it's not listed here.
+zen-browser-bin
+visual-studio-code-bin
+onlyoffice-bin
+stirling-pdf-desktop-bin
+termix-bin
+element-desktop
+microsoft-edge-stable-bin
+vacuumtube-bin
+ytmdesktop-bin
+opencode-bin
+displaylink

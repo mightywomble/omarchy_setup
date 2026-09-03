@@ -1,0 +1,14 @@
+# Official Arch repo packages added on this machine (beyond Omarchy defaults).
+# Installed by the `install` category via: sudo pacman -S --needed
+# One package name per line; blank lines and lines starting with # are ignored.
+discord
+tokodon
+nextcloud-client
+kubectl
+helm
+ansible
+docker
+terraform
+kdeconnect
+tailscale
+zenity

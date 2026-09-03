@@ -1,0 +1,18 @@
+#!/bin/sh
+# Confirm before closing the focused window. Bound to SUPER+W in Hyprland.
+#
+# Captures the focused window's address BEFORE the dialog steals focus,
+# then closes that specific window by address on confirmation, so we close
+# the right window regardless of focus changes while the dialog is open.
+
+addr=$(hyprctl activewindow -j | jq -r '.address // empty')
+[ -n "$addr" ] || exit 0
+
+if zenity --question \
+    --title='Close Window' \
+    --text='Do you want to quit this app?' \
+    --ok-label='Yes, close' \
+    --cancel-label='No' 2>/dev/null
+then
+  hyprctl dispatch "hl.dsp.window.close({ window = \"address:$addr\" })" >/dev/null
+fi

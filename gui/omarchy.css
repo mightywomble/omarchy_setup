@@ -1,0 +1,258 @@
+/*
+ * Omarchy setup wizard — base CSS.
+ * Theme color variables (@define-color om_*) are injected at runtime from the
+ * active Omarchy theme's colors.toml, prepended before this file is loaded.
+ * Class names use the om- prefix to avoid colliding with libadwaita defaults.
+ */
+
+/* --- window & background --- */
+window.om-wizard {
+  background-color: @om_bg;
+}
+
+window.om-wizard .om-scrolled {
+  background-color: transparent;
+}
+
+/* --- page container --- */
+.om-page {
+  padding: 24px 28px;
+}
+
+.om-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: @om_fg;
+  margin-bottom: 4px;
+}
+
+.om-subtitle {
+  font-size: 13px;
+  color: @om_muted;
+  margin-bottom: 18px;
+}
+
+/* --- cards (the main content panel) --- */
+.om-card {
+  background-color: @om_lighter_bg;
+  border-radius: 14px;
+  padding: 6px;
+  margin-bottom: 16px;
+}
+
+.om-card-frame {
+  background-color: @om_lighter_bg;
+  border-radius: 14px;
+}
+
+/* --- list rows --- */
+.om-row {
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 2px 0;
+}
+
+.om-row:hover {
+  background-color: alpha(@om_accent, 0.08);
+}
+
+.om-row-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: @om_fg;
+}
+
+.om-row-id {
+  font-size: 11px;
+  color: @om_muted;
+}
+
+.om-row-desc {
+  font-size: 12px;
+  color: @om_muted;
+  margin-top: 2px;
+}
+
+/* --- badges --- */
+.om-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 5px;
+  color: @om_fg;
+  background-color: alpha(@om_muted, 0.3);
+}
+
+.om-badge-aur {
+  color: @om_bright_fg;
+  background-color: alpha(@om_accent, 0.55);
+}
+
+.om-badge-removed {
+  color: @om_bright_fg;
+  background-color: alpha(@om_red, 0.5);
+}
+
+.om-badge-pacman {
+  color: @om_bright_fg;
+  background-color: alpha(@om_bright_green, 0.4);
+}
+
+.om-badge-fits {
+  color: @om_bright_fg;
+  background-color: alpha(@om_bright_green, 0.6);
+}
+
+.om-badge-tight {
+  color: @om_bright_fg;
+  background-color: alpha(@om_yellow, 0.6);
+}
+
+.om-badge-toobig {
+  color: @om_bright_fg;
+  background-color: alpha(@om_red, 0.6);
+}
+
+.om-gpu-info {
+  font-size: 13px;
+  color: @om_fg;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background-color: alpha(@om_accent, 0.12);
+  margin-bottom: 12px;
+}
+
+.om-badge-firstparty {
+  color: @om_bright_fg;
+  background-color: alpha(@om_green, 0.4);
+}
+
+.om-badge-kind {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: @om_muted;
+  background-color: alpha(@om_muted, 0.18);
+}
+
+/* --- configured-packages group header --- */
+.om-group-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: @om_fg;
+  padding: 8px 6px 4px 6px;
+}
+
+.om-group-count {
+  font-size: 11px;
+  color: @om_muted;
+}
+
+/* --- search entry --- */
+.om-search {
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+/* --- search progress bar --- */
+.om-search-progress {
+  margin: 6px 4px;
+}
+.om-search-progress trough {
+  border-radius: 6px;
+}
+.om-search-progress progress {
+  border-radius: 6px;
+  background-color: @om_accent;
+}
+.om-search-progress text {
+  color: @om_muted;
+  font-size: 11px;
+}
+
+/* --- step indicator in header --- */
+.om-step {
+  font-size: 12px;
+  font-weight: 600;
+  color: @om_muted;
+  letter-spacing: 0.5px;
+}
+
+/* --- navigation buttons --- */
+.om-nav-btn {
+  border-radius: 9px;
+  padding: 7px 16px;
+  font-weight: 600;
+}
+
+.om-nav-btn-primary {
+  background-color: @om_accent;
+  color: @om_bright_fg;
+}
+
+.om-nav-btn-primary:hover {
+  background-color: @om_bright_accent;
+}
+
+.om-nav-btn-primary:disabled {
+  background-color: alpha(@om_accent, 0.35);
+}
+
+/* --- add-plugin row --- */
+.om-add-entry {
+  border-radius: 8px;
+}
+
+.om-add-btn {
+  border-radius: 8px;
+  background-color: alpha(@om_accent, 0.25);
+  color: @om_bright_fg;
+}
+
+/* --- review summary --- */
+.om-summary-section {
+  font-size: 13px;
+  color: @om_fg;
+  margin-bottom: 10px;
+}
+
+.om-summary-label {
+  font-weight: 700;
+  color: @om_fg;
+  font-size: 14px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.om-summary-item {
+  color: @om_muted;
+  font-size: 12px;
+  padding-left: 12px;
+}
+
+.om-success {
+  color: @om_bright_green;
+  font-weight: 600;
+}
+
+.om-chip {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: alpha(@om_accent, 0.2);
+  color: @om_light_fg;
+}
+
+/* --- select-all / none helper buttons --- */
+.om-helper-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  color: @om_muted;
+}
+
+.om-helper-btn:hover {
+  color: @om_fg;
+  background-color: alpha(@om_accent, 0.1);
+}
