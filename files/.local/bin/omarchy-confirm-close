@@ -1,18 +1,19 @@
 #!/bin/sh
 # Confirm before closing the focused window. Bound to SUPER+W in Hyprland.
 #
-# Captures the focused window's address BEFORE the dialog steals focus,
+# Captures the focused window's address BEFORE the menu steals focus,
 # then closes that specific window by address on confirmation, so we close
-# the right window regardless of focus changes while the dialog is open.
+# the right window regardless of focus changes while the menu is open.
+#
+# Uses Omarchy's built-in menu (omarchy menu select) so it works without any
+# extra packages (e.g. zenity). 'omarchy menu select' prints the chosen label
+# and exits 0 on a selection, or exits non-zero if the menu is dismissed.
 
 addr=$(hyprctl activewindow -j | jq -r '.address // empty')
 [ -n "$addr" ] || exit 0
 
-if zenity --question \
-    --title='Close Window' \
-    --text='Do you want to quit this app?' \
-    --ok-label='Yes, close' \
-    --cancel-label='No' 2>/dev/null
-then
+choice=$(omarchy menu select "Close this app?" "Yes, close" "No" 2>/dev/null) || exit 0
+
+if [ "$choice" = "Yes, close" ]; then
   hyprctl dispatch "hl.dsp.window.close({ window = \"address:$addr\" })" >/dev/null
 fi
