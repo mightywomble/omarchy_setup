@@ -23,19 +23,21 @@
 #   dotfiles     .bashrc, git config, starship, btop, mise
 #   barconfig    ~/.config/omarchy/shell.json (bar layout/plugin state)
 #   gpu          install Ollama (CUDA/NVIDIA) + a small GPU model
+#   hermes       install Hermes Agent (CLI + TUI) + optional desktop / web /
+#                AI-provider (default OpenRouter) + model selection
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 FILES_DIR="$SCRIPT_DIR/files"
 
-CATEGORIES=(packages install webapps plugins theme gloview hyprland keybindings dotfiles barconfig gpu)
+CATEGORIES=(packages install webapps plugins theme gloview hyprland keybindings dotfiles barconfig gpu hermes)
 
 info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$1" >&2; }
 
 describe() {
   case "$1" in
-    packages)    echo "Remove default packages you removed (13 packages)" ;;
+    packages)    echo "Remove default packages you removed (14 packages)" ;;
     install)     echo "Install added packages (11 official + 11 AUR)" ;;
     webapps)     echo "Remove Omarchy web app launcher entries (Discord, YouTube, WhatsApp, etc.)" ;;
     plugins)     echo "Install third-party shell plugins (15 plugins)" ;;
@@ -46,6 +48,7 @@ describe() {
     dotfiles)    echo "Apply dotfiles (.bashrc, git config, starship, btop, mise)" ;;
     barconfig)   echo "Apply bar/plugin layout (shell.json)" ;;
     gpu)         echo "Install Ollama (CUDA/NVIDIA) + a small GPU model" ;;
+    hermes)      echo "Install Hermes Agent (CLI + TUI) + optional desktop/web/provider/model" ;;
   esac
 }
 
@@ -323,6 +326,211 @@ apply_gpu() {
   done
 }
 
+# ------------------------------------------------------------------ hermes --
+# Hermes Agent helpers (https://hermes-agent.nousresearch.com). The official
+# installer (curl ... | bash) clones the repo into ~/.hermes/hermes-agent,
+# builds a Python 3.11 venv + the Ink TUI, and links `hermes` into
+# ~/.local/bin. These functions install it and wire up the optional pieces the
+# installer does not own on an Omarchy box: the AUR desktop app, a systemd
+# user unit for the web dashboard, and provider/API-key/model configuration.
+
+# hermes_env_set KEY VALUE — write/update KEY=VALUE in ~/.hermes/.env (0600).
+hermes_env_set() {
+  local key="$1" val="$2" env_file="$HOME/.hermes/.env" esc
+  mkdir -p "$HOME/.hermes"
+  [[ -f "$env_file" ]] || { touch "$env_file"; chmod 600 "$env_file"; }
+  esc=$(printf '%s' "$val" | sed -e 's/[\/&|]/\\&/g')
+  if grep -qE "^${key}=" "$env_file"; then
+    sed -i -E "s|^${key}=.*|${key}=${esc}|" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$env_file"
+  fi
+}
+
+# hermes_install_web_service PORT — write + enable+start hermes-studio.service
+# (dashboard on 127.0.0.1:PORT). Idempotent.
+hermes_install_web_service() {
+  local port="$1" unit="$HOME/.config/systemd/user/hermes-studio.service"
+  echo "  enabling hermes-studio.service (dashboard on 127.0.0.1:$port)"
+  mkdir -p "$(dirname "$unit")"
+  cat > "$unit" <<EOF
+[Unit]
+Description=Hermes Studio (hermes dashboard web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$HOME
+Environment=PATH=$HOME/.local/bin:$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$HOME/.local/bin/hermes dashboard --no-open --port $port --host 127.0.0.1
+ExecStop=$HOME/.local/bin/hermes dashboard --stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now hermes-studio.service || warn "failed to enable+start hermes-studio.service"
+}
+
+# hermes_configure_provider — pick a provider (default OpenRouter), write the
+# API key to ~/.hermes/.env, and set model.provider/model.base_url in
+# config.yaml. Providers outside the curated list delegate to `hermes setup
+# model`, which knows the full catalog and per-provider base URLs.
+hermes_configure_provider() {
+  local provider="${CONFIG_HERMES_PROVIDER:-}" api_key="${CONFIG_HERMES_API_KEY:-}" base_url="${CONFIG_HERMES_BASE_URL:-}"
+  local keyvar choice
+  [[ "$provider" == "true" || -z "$provider" ]] && provider=openrouter
+  if [[ "$interactive" == "true" ]]; then
+    cat <<EOF
+  Common providers:
+    1) OpenRouter   (default; 300+ models, pay-per-use)
+    2) OpenAI API
+    3) Anthropic
+    4) Google AI Studio (Gemini)
+    5) DeepSeek
+    6) xAI (Grok)
+    7) Other / use the interactive wizard (full catalog)
+EOF
+    printf "  Choose a provider [1]: "
+    read -r choice; choice="${choice:-1}"
+    case "$choice" in
+      1) provider=openrouter; base_url="https://openrouter.ai/api/v1" ;;
+      2) provider=openai-api; base_url="https://api.openai.com/v1" ;;
+      3) provider=anthropic;  base_url="https://api.anthropic.com" ;;
+      4) provider=gemini;     base_url="https://generativelanguage.googleapis.com/v1beta" ;;
+      5) provider=deepseek;   base_url="https://api.deepseek.com/v1" ;;
+      6) provider=xai;        base_url="https://api.x.ai/v1" ;;
+      7) provider=wizard ;;
+      *) provider=openrouter; base_url="https://openrouter.ai/api/v1" ;;
+    esac
+  fi
+  case "$provider" in
+    openrouter|openai-api|anthropic|gemini|deepseek|xai) ;;
+    *)
+      echo "  launching 'hermes setup model' (interactive provider + model wizard)..."
+      hermes setup model || warn "hermes setup model did not complete"
+      return ;;
+  esac
+  case "$provider" in
+    openrouter) keyvar=OPENROUTER_API_KEY ;;
+    openai-api) keyvar=OPENAI_API_KEY ;;
+    anthropic)  keyvar=ANTHROPIC_API_KEY ;;
+    gemini)     keyvar=GEMINI_API_KEY ;;
+    deepseek)   keyvar=DEEPSEEK_API_KEY ;;
+    xai)        keyvar=XAI_API_KEY ;;
+  esac
+  if [[ "$interactive" == "true" && -z "$api_key" ]]; then
+    printf "  Enter %s (input hidden, blank to skip): " "$keyvar"
+    read -rs api_key; echo
+  fi
+  if [[ -z "$api_key" ]]; then
+    warn "no API key provided — set $keyvar in ~/.hermes/.env or run 'hermes setup model' later"
+  else
+    hermes_env_set "$keyvar" "$api_key"
+    echo "  wrote $keyvar to ~/.hermes/.env"
+  fi
+  hermes config set model.provider "$provider" >/dev/null 2>&1 || warn "failed to set model.provider"
+  [[ -n "$base_url" ]] && hermes config set model.base_url "$base_url" >/dev/null 2>&1 || true
+  echo "  provider set to '$provider'${base_url:+ ($base_url)}"
+}
+
+# hermes_select_model [PRESET] — set model.default directly from PRESET, or
+# launch `hermes model` (interactive picker; --refresh re-fetches /v1/models so
+# you can search and select). Skipped in non-interactive mode without a preset.
+hermes_select_model() {
+  local preset="${1:-}"
+  if [[ -n "$preset" && "$preset" != "true" ]]; then
+    hermes config set model.default "$preset" >/dev/null 2>&1 || warn "failed to set model.default"
+    echo "  default model set to '$preset'"
+    return
+  fi
+  if [[ "$interactive" != "true" ]]; then
+    echo "  skipping model picker (non-interactive) — run 'hermes model' later to choose"
+    return
+  fi
+  echo "  launching 'hermes model' (search/select; --refresh re-fetches /v1/models)..."
+  hermes model --refresh || warn "hermes model picker did not complete"
+}
+
+apply_hermes() {
+  info "Installing Hermes Agent (CLI + TUI)"
+  if [[ "${CONFIG_HERMES_INSTALL:-true}" == "false" ]]; then
+    echo "  hermes disabled in config, skipping"
+    return
+  fi
+  # 1. Install the agent (CLI + TUI). --skip-setup defers provider/key/model
+  #    configuration to the options below; --non-interactive avoids any prompt
+  #    from the installer itself (system packages, wizard). Idempotent.
+  export PATH="$HOME/.local/bin:$PATH"
+  if command -v hermes >/dev/null 2>&1; then
+    echo "  hermes already installed ($(hermes --version 2>/dev/null | head -1)), skipping"
+  else
+    echo "  running official installer (first run builds a venv + TUI; this can take several minutes)..."
+    if ! curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup --non-interactive; then
+      warn "hermes installer reported a failure"
+      return
+    fi
+    if ! command -v hermes >/dev/null 2>&1; then
+      warn "hermes command not found after install — ensure ~/.local/bin is on PATH and re-run"
+      return
+    fi
+  fi
+  # Sub-options honour --myconfig overrides (CONFIG_HERMES_*) and prompt in
+  # interactive/--only mode; --all and --myconfig apply defaults without prompts.
+  local interactive=false
+  if [[ -t 0 ]] && [[ "${mode:-}" != "all" && "${mode:-}" != "myconfig" ]]; then
+    interactive=true
+  fi
+  local reply dflt
+  # 2. Desktop application (AUR: hermes-desktop, from the omarchy repo).
+  local enable_desktop="${CONFIG_HERMES_DESKTOP:-false}"
+  if [[ "$interactive" == "true" ]]; then
+    dflt=n; [[ "$enable_desktop" == "true" ]] && dflt=y
+    printf "Enable the Hermes desktop application? [y/N]: "
+    read -r reply; reply="${reply:-$dflt}"
+    [[ "$reply" =~ ^[Yy]$ ]] && enable_desktop=true || enable_desktop=false
+  fi
+  if [[ "$enable_desktop" == "true" ]]; then
+    echo "  installing hermes-desktop (AUR)"
+    if command -v yay >/dev/null 2>&1; then
+      yay -S --needed --noconfirm --removemake hermes-desktop || warn "failed to install hermes-desktop"
+    else
+      warn "yay not found — install hermes-desktop manually: yay -S hermes-desktop"
+    fi
+  fi
+  # 3. Web server interface (Hermes Studio dashboard, systemd user service).
+  local enable_web="${CONFIG_HERMES_WEB:-false}"
+  local web_port="${CONFIG_HERMES_WEB_PORT:-9119}"
+  if [[ "$interactive" == "true" ]]; then
+    dflt=n; [[ "$enable_web" == "true" ]] && dflt=y
+    printf "Enable the Hermes web interface (dashboard on 127.0.0.1:%s)? [y/N]: " "$web_port"
+    read -r reply; reply="${reply:-$dflt}"
+    [[ "$reply" =~ ^[Yy]$ ]] && enable_web=true || enable_web=false
+  fi
+  [[ "$enable_web" == "true" ]] && hermes_install_web_service "$web_port"
+  # 4. AI provider + API key (default OpenRouter).
+  local do_provider=true
+  [[ "${CONFIG_HERMES_PROVIDER:-}" == "false" ]] && do_provider=false
+  if [[ "$interactive" == "true" ]]; then
+    printf "Add an AI provider + API key (default OpenRouter)? [Y/n]: "
+    read -r reply; [[ "${reply:-y}" =~ ^[Nn]$ ]] && do_provider=false
+  fi
+  [[ "$do_provider" == "true" ]] && hermes_configure_provider
+  # 5. Select / search for a default model.
+  local do_model=true
+  if [[ "$interactive" == "true" ]]; then
+    printf "Select / search for a default model now (interactive picker)? [Y/n]: "
+    read -r reply; [[ "${reply:-y}" =~ ^[Nn]$ ]] && do_model=false
+  fi
+  [[ "$do_model" == "true" ]] && hermes_select_model "${CONFIG_HERMES_MODEL:-}"
+  echo "  Hermes Agent ready — run 'hermes chat' for the TUI"
+  [[ "$enable_web" == "true" ]] && echo "  Web UI: http://127.0.0.1:$web_port/  (systemctl --user status hermes-studio)"
+}
+
 run_category() {
   case "$1" in
     packages)    apply_packages ;;
@@ -336,6 +544,7 @@ run_category() {
     dotfiles)    apply_dotfiles ;;
     barconfig)   apply_barconfig ;;
     gpu)         apply_gpu ;;
+    hermes)      apply_hermes ;;
     *) warn "unknown category: $1" ;;
   esac
 }
@@ -418,7 +627,7 @@ case "${1:-}" in
     exit 0
     ;;
   -h|--help)
-    sed -n '2,24p' "$0"
+    sed -n '2,27p' "$0"
     exit 0
     ;;
   "")
@@ -458,6 +667,19 @@ if [[ "$mode" == "myconfig" ]]; then
   fi
   if jq -e '.ollama_models' "$config_file" >/dev/null 2>&1; then
     export CONFIG_OLLAMA_MODELS="$(jq -r '.ollama_models | join(",")' "$config_file")"
+  fi
+  # Hermes Agent toggles (.hermes object). Defaults: install on, desktop/web
+  # off, provider openrouter, port 9119. provider/api_key/base_url/model are
+  # empty unless set — apply_hermes fills the OpenRouter defaults at runtime.
+  if jq -e '.hermes' "$config_file" >/dev/null 2>&1; then
+    export CONFIG_HERMES_INSTALL="$(jq -r '.hermes.install // true' "$config_file")"
+    export CONFIG_HERMES_DESKTOP="$(jq -r '.hermes.desktop // false' "$config_file")"
+    export CONFIG_HERMES_WEB="$(jq -r '.hermes.web // false' "$config_file")"
+    export CONFIG_HERMES_WEB_PORT="$(jq -r '.hermes.web_port // 9119' "$config_file")"
+    export CONFIG_HERMES_PROVIDER="$(jq -r '.hermes.provider // ""' "$config_file")"
+    export CONFIG_HERMES_API_KEY="$(jq -r '.hermes.api_key // ""' "$config_file")"
+    export CONFIG_HERMES_BASE_URL="$(jq -r '.hermes.base_url // ""' "$config_file")"
+    export CONFIG_HERMES_MODEL="$(jq -r '.hermes.model // ""' "$config_file")"
   fi
   # Read selected categories from JSON, run them in fixed order.
   mapfile -t selected < <(jq -r '.categories[]?' "$config_file")
