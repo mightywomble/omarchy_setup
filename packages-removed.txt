@@ -13,4 +13,6 @@ omacut
 omawrite
 omarchy-nvim
 pinta
+# tmog-bin: AUR package removed by user (not an Omarchy default)
+tmog-bin
 xournalpp
