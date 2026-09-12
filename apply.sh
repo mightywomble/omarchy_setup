@@ -271,6 +271,11 @@ apply_keybindings() {
   # feature-gated; chmod in case git lost the exec bit on clone.
   backup_and_copy_file ".local/bin/omarchy-plugin-vet"
   chmod +x "$HOME/.local/bin/omarchy-plugin-vet"
+  # omarchy-tdl-workspace: SUPER+H launcher (VSCode + foot/tmux with btop +
+  # tdl a). Copied before bindings.lua so the binding resolves on first press;
+  # chmod in case git lost the exec bit.
+  backup_and_copy_file ".local/bin/omarchy-tdl-workspace"
+  chmod +x "$HOME/.local/bin/omarchy-tdl-workspace"
   backup_and_copy_file ".config/hypr/bindings.lua"
   reload_hyprland
 }

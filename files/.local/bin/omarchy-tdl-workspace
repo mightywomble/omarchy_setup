@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# omarchy-tdl-workspace — launched by the SUPER+H keybinding.
+#
+# Opens a side-by-side workspace:
+#   - VSCode (GUI) on the left
+#   - foot on the right, running tmux session "tdl" with:
+#       * btop in a left pane (system monitor)
+#       * `tdl a` dev-loop in the right area (TUI editor + Omarchy agent)
+#
+# `tdl` is a bash function (defined in ~/.bashrc) that splits the current tmux
+# pane into an editor pane + an AI-agent pane + a bottom strip. For that to
+# work from a keybinding it must be SENT AS KEYSTROKES to an interactive shell
+# (so the editor pane's shell stays alive after tdl returns) — running it as a
+# `new-session` command would close that pane. Hence the interactive right pane
+# + `tmux send-keys`.
+#
+# Idempotent: re-pressing SUPER+H focuses existing VSCode/foot windows and the
+# existing tmux session instead of spawning duplicates.
+#
+# Logs to /tmp/omarchy-tdl-workspace.log for diagnostics.
+
+set -uo pipefail
+LOG=/tmp/omarchy-tdl-workspace.log
+exec >>"$LOG" 2>&1
+echo "==== $(date '+%Y-%m-%d %H:%M:%S') ===="
+
+CODE_CLASS="Code"
+FOOT_CLASS="omarchy-tdl"      # foot is launched with --app-id=omarchy-tdl
+SESSION="tdl"
+
+# hypr_addr <class> — print the Hyprland window address for the first window
+# whose class (or app-id) matches <class>, or empty if none.
+hypr_addr() {
+  hyprctl clients -j 2>/dev/null | python3 -c '
+import sys, json
+want = sys.argv[1]
+for c in json.load(sys.stdin):
+    if (c.get("class") or "") == want or (c.get("app-id") or "") == want:
+        print(c["address"]); break
+' "$1"
+}
+
+# 1. VSCode: focus an existing window, or launch one.
+code_addr="$(hypr_addr "$CODE_CLASS")"
+if [[ -n "$code_addr" ]]; then
+  echo "VSCode already open ($code_addr) — focusing"
+  hyprctl dispatch focuswindow address:"$code_addr" >/dev/null 2>&1
+else
+  echo "Launching VSCode"
+  uwsm-app -- code >/dev/null 2>&1 &
+  for _ in $(seq 1 60); do           # wait up to ~15s for the Electron window
+    code_addr="$(hypr_addr "$CODE_CLASS")"
+    [[ -n "$code_addr" ]] && break
+    sleep 0.25
+  done
+  if [[ -z "$code_addr" ]]; then
+    echo "warning: VSCode window did not appear in 15s — continuing"
+  else
+    echo "VSCode mapped ($code_addr) — focusing"
+    hyprctl dispatch focuswindow address:"$code_addr" >/dev/null 2>&1
+  fi
+fi
+
+# 2. tmux session "tdl": create with btop (left) + interactive shell (right)
+#    only if it doesn't already exist. On first creation, send `tdl a` to the
+#    interactive right pane so the dev-loop splits it into editor + agent.
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "tmux session '$SESSION' exists — reusing"
+else
+  echo "Creating tmux session '$SESSION': btop left, interactive shell right"
+  tmux new-session -d -s "$SESSION" 'btop'
+  tmux split-window -h -t "$SESSION"          # right pane = interactive bash
+  sleep 0.4
+  tmux send-keys -t "$SESSION:1.2" 'tdl a' C-m
+fi
+
+# 3. foot: focus an existing omarchy-tdl window, or launch one attached to the
+#    session. With VSCode focused above, dwindle tiles this to its right.
+foot_addr="$(hypr_addr "$FOOT_CLASS")"
+if [[ -n "$foot_addr" ]]; then
+  echo "foot/tdl already open ($foot_addr) — focusing"
+  hyprctl dispatch focuswindow address:"$foot_addr" >/dev/null 2>&1
+else
+  echo "Launching foot attached to tmux session '$SESSION'"
+  uwsm-app -- foot -a "$FOOT_CLASS" tmux attach -t "$SESSION" >/dev/null 2>&1 &
+  for _ in $(seq 1 40); do           # wait up to ~10s for the foot window
+    foot_addr="$(hypr_addr "$FOOT_CLASS")"
+    [[ -n "$foot_addr" ]] && break
+    sleep 0.25
+  done
+  if [[ -z "$foot_addr" ]]; then
+    echo "warning: foot window did not appear in 10s — continuing"
+  else
+    echo "foot mapped ($foot_addr)"
+  fi
+fi
+
+# 4. Enforce VSCode-left / foot-right, then focus foot so keystrokes reach tdl.
+if [[ -n "$code_addr" && -n "$foot_addr" ]]; then
+  hyprctl dispatch focuswindow address:"$code_addr" >/dev/null 2>&1
+  hyprctl dispatch movewindow l >/dev/null 2>&1
+  hyprctl dispatch focuswindow address:"$foot_addr" >/dev/null 2>&1
+  hyprctl dispatch movewindow r >/dev/null 2>&1
+  hyprctl dispatch focuswindow address:"$foot_addr" >/dev/null 2>&1
+fi
+echo "done"

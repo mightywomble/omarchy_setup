@@ -25,6 +25,12 @@ o.bind("SUPER + W", "Close window (confirm)", "/home/david/.local/bin/omarchy-co
 -- Lock the screen (mirrors the default SUPER + CTRL + L).
 o.bind("SUPER + ALT + L", "Lock system", "omarchy-system-lock")
 
+-- TDL workspace: VSCode (left) + foot/tmux (right). The foot tmux session
+-- "tdl" has btop in a left pane and `tdl a` (TUI editor + Omarchy agent) in
+-- the right area. tdl is a bash function, so the launcher sends it as
+-- keystrokes to an interactive pane — see the script for details.
+o.bind("SUPER + H", "TDL workspace (VSCode + foot)", "/home/david/.local/bin/omarchy-tdl-workspace")
+
 -- Region screenshot, macOS-style (Cmd+Shift+4 equivalent).
 -- Unbind existing SUPER + ALT + 4 (was: Switch to group window 4, bound by keycode).
 hl.unbind("SUPER + ALT + code:13")
