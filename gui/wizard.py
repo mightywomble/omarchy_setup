@@ -419,7 +419,7 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
                  extra_pacman, extra_aur, category_order,
                  configured_pkg_toggles=None, packages_data=None,
                  confirm_close=None, ollama_install=None, ollama_models=None,
-                 hermes=None):
+                 electron_keyring_fix=None, hermes=None):
     """Build the JSON config dict from wizard state.
 
     categories       — dict {name: bool}
@@ -434,6 +434,8 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
     confirm_close    — bool or None (SUPER+W confirm-close feature)
     ollama_install   — bool or None (Ollama + GPU models feature)
     ollama_models    — list of model tags to pull, or None
+    electron_keyring_fix — bool or None (write --password-store=gnome-libsecret
+                       flags for VS Code + Element; see apply_electron_keyring_fix)
     hermes           — dict or None (Hermes Agent options; see apply_hermes)
     """
     selected = [c for c in category_order if categories.get(c, False)]
@@ -477,6 +479,8 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
         features["confirm_close"] = confirm_close
     if ollama_install is not None:
         features["ollama_install"] = ollama_install
+    if electron_keyring_fix is not None:
+        features["electron_keyring_fix"] = electron_keyring_fix
     if features:
         result["features"] = features
 
@@ -514,6 +518,7 @@ def default_config(setup_dir):
         categories, states, toggles, plugins_add, set(), set(),
         category_order, pkg_toggles, pkgs,
         confirm_close=True, ollama_install=True, ollama_models=["qwen2.5:3b"],
+        electron_keyring_fix=True,
         hermes={"install": True, "desktop": False, "web": False,
                 "web_port": 9119, "provider": "openrouter",
                 "api_key": "", "base_url": "https://openrouter.ai/api/v1",
@@ -579,6 +584,7 @@ class WizardApp(Adw.Application):
         # Feature toggles (shown on the defaults page).
         self.confirm_close_enabled = True
         self.ollama_enabled = True
+        self.electron_keyring_fix_enabled = True
 
         # GPU + ollama model state.
         self.gpu_name, self.gpu_vram = get_gpu_vram()
@@ -842,6 +848,19 @@ class WizardApp(Adw.Application):
         self._ol_switch = ol_switch
         card.append(ol_row)
 
+        # Electron app keyring fix (VS Code + Element) toggle.
+        ek_row = self._make_toggle_row(
+            "Fix Electron keyring (VS Code + Element)",
+            "Writes --password-store=gnome-libsecret so VS Code and Element "
+            "store secrets in the GNOME keyring. Without it, both show 'An os "
+            "keyring couldn't be identified' on Hyprland. Applied only for each "
+            "app you keep selected on the Packages page.",
+            self.electron_keyring_fix_enabled)
+        ek_switch = ek_row.switch_widget
+        ek_switch.connect("notify::active", self._on_electron_keyring_toggle)
+        self._ek_switch = ek_switch
+        card.append(ek_row)
+
         return card
 
     def _on_confirm_close_toggle(self, switch, _pspec):
@@ -849,6 +868,9 @@ class WizardApp(Adw.Application):
 
     def _on_ollama_toggle(self, switch, _pspec):
         self.ollama_enabled = switch.get_active()
+
+    def _on_electron_keyring_toggle(self, switch, _pspec):
+        self.electron_keyring_fix_enabled = switch.get_active()
 
     def _set_all_categories(self, val):
         for name, sw in self.category_switches.items():
@@ -2119,6 +2141,7 @@ class WizardApp(Adw.Application):
             confirm_close=self.confirm_close_enabled,
             ollama_install=self.ollama_enabled,
             ollama_models=self.ollama_models_to_pull,
+            electron_keyring_fix=self.electron_keyring_fix_enabled,
             hermes=self._hermes_config(),
         )
 
@@ -2138,6 +2161,10 @@ class WizardApp(Adw.Application):
             )
             self._add_review_item(
                 f"Ollama + GPU models: {'✓ enabled' if feats.get('ollama_install') else '✗ disabled'}"
+            )
+            self._add_review_item(
+                f"Electron keyring fix (VS Code + Element): "
+                f"{'✓ enabled' if feats.get('electron_keyring_fix') else '✗ disabled'}"
             )
 
         # Ollama models section.
@@ -2245,6 +2272,7 @@ class WizardApp(Adw.Application):
             confirm_close=self.confirm_close_enabled,
             ollama_install=self.ollama_enabled,
             ollama_models=self.ollama_models_to_pull,
+            electron_keyring_fix=self.electron_keyring_fix_enabled,
             hermes=self._hermes_config(),
         )
 

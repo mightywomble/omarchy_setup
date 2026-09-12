@@ -85,6 +85,27 @@ backup_and_copy_dir() {
   echo "  wrote $dest/"
 }
 
+# ensure_flag_file <dest-file> <flag-line> — make sure <flag-line> is present in
+# the flags file, creating it if missing. Preserves any existing flags; backs up
+# the file once before first modifying it. Idempotent (no-op if flag present).
+# Used for Electron --password-store flags read on every app launch.
+ensure_flag_file() {
+  local dest="$1" flag="$2"
+  mkdir -p "$(dirname "$dest")"
+  if [[ ! -e "$dest" ]]; then
+    printf '%s\n' "$flag" > "$dest"
+    echo "  wrote $dest"
+    return
+  fi
+  if grep -qxF -- "$flag" "$dest"; then
+    echo "  $dest already has flag, skipping"
+    return
+  fi
+  cp -a "$dest" "$dest.bak.$(date +%s)"
+  printf '%s\n' "$flag" >> "$dest"
+  echo "  added flag to $dest (backed up original)"
+}
+
 reload_hyprland() {
   if command -v hyprctl >/dev/null 2>&1 && hyprctl monitors >/dev/null 2>&1; then
     hyprctl reload
@@ -192,6 +213,35 @@ apply_install() {
       sudo systemctl enable --now "$svc" || warn "failed to enable+start $svc"
     fi
   done
+  # Electron app keyring fix (see apply_electron_keyring_fix below).
+  apply_electron_keyring_fix
+}
+
+# apply_electron_keyring_fix — write Electron --password-store=gnome-libsecret
+# flags for VS Code and Element so their safeStorage stores secrets in the GNOME
+# keyring via libsecret. On Hyprland, XDG_CURRENT_DESKTOP is not recognized by
+# Chromium's password-store auto-detection, so without this both apps report
+# "An os keyring couldn't be identified for storing the encryption related data".
+# The flag is written only for an app that is in the selected AUR install set
+# (so toggling the app off on the wizard's Packages page skips its flag).
+# Gated by CONFIG_ELECTRON_KEYRING_FIX (default true; set via --myconfig features).
+apply_electron_keyring_fix() {
+  if [[ "${CONFIG_ELECTRON_KEYRING_FIX:-true}" == "false" ]]; then
+    echo "  electron keyring fix disabled in config, skipping"
+    return
+  fi
+  local aur_source="${CONFIG_AUR_FILE:-$SCRIPT_DIR/packages-aur.txt}"
+  [[ -f "$aur_source" ]] || return
+  local flag="--password-store=gnome-libsecret"
+  # VS Code: /usr/bin/code reads ~/.config/code-flags.conf on every launch.
+  if grep -qxF -- "visual-studio-code-bin" "$aur_source" 2>/dev/null; then
+    ensure_flag_file "$HOME/.config/code-flags.conf" "$flag"
+  fi
+  # Element: /usr/bin/electron43 reads <name>-flags.conf (then electron-flags.conf)
+  # on every launch; element-desktop launches via electron43.
+  if grep -qxF -- "element-desktop" "$aur_source" 2>/dev/null; then
+    ensure_flag_file "$HOME/.config/electron43-flags.conf" "$flag"
+  fi
 }
 
 apply_plugins() {
@@ -667,8 +717,12 @@ if [[ "$mode" == "myconfig" ]]; then
   fi
   # Feature toggles (features object) + ollama model list.
   if jq -e '.features' "$config_file" >/dev/null 2>&1; then
-    export CONFIG_CONFIRM_CLOSE="$(jq -r '.features.confirm_close // true' "$config_file")"
-    export CONFIG_OLLAMA_INSTALL="$(jq -r '.features.ollama_install // true' "$config_file")"
+    # NOTE: jq's `//` falls through on `false` as well as null, so
+    # `.x // true` returns "true" even when a toggle is explicitly false. Use a
+    # null-only fallback so an OFF toggle actually propagates as "false".
+    export CONFIG_CONFIRM_CLOSE="$(jq -r 'if .features.confirm_close == null then "true" else (.features.confirm_close|tostring) end' "$config_file")"
+    export CONFIG_OLLAMA_INSTALL="$(jq -r 'if .features.ollama_install == null then "true" else (.features.ollama_install|tostring) end' "$config_file")"
+    export CONFIG_ELECTRON_KEYRING_FIX="$(jq -r 'if .features.electron_keyring_fix == null then "true" else (.features.electron_keyring_fix|tostring) end' "$config_file")"
   fi
   if jq -e '.ollama_models' "$config_file" >/dev/null 2>&1; then
     export CONFIG_OLLAMA_MODELS="$(jq -r '.ollama_models | join(",")' "$config_file")"
