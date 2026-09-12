@@ -360,6 +360,56 @@ def search_ollama_models(query, vram_mib=None):
     return models
 
 
+# Hermes Agent provider menu (slug, label, base_url). Mirrors the curated
+# list in apply.sh's apply_hermes; providers outside this set delegate to the
+# `hermes setup model` interactive wizard (slug "wizard").
+HERMES_PROVIDERS = [
+    ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1"),
+    ("openai-api", "OpenAI API", "https://api.openai.com/v1"),
+    ("anthropic", "Anthropic", "https://api.anthropic.com"),
+    ("gemini", "Google AI Studio (Gemini)",
+     "https://generativelanguage.googleapis.com/v1beta"),
+    ("deepseek", "DeepSeek", "https://api.deepseek.com/v1"),
+    ("xai", "xAI (Grok)", "https://api.x.ai/v1"),
+    ("wizard", "Other (use hermes setup model wizard)", ""),
+]
+
+
+def search_openrouter_models(query):
+    """Search OpenRouter's public /v1/models catalog (no auth needed) → list of
+    {id, name, context, prompt_price, desc}, filtered by query, sorted by id.
+    The catalog is a single GET (~300 models); we fetch and filter per query.
+    """
+    if not query or not query.strip():
+        return []
+    import urllib.request
+    url = "https://openrouter.ai/api/v1/models"
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "omarchy-setup-wizard"})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    q = query.strip().lower()
+    out = []
+    for m in data.get("data", []):
+        mid = m.get("id", "")
+        mname = m.get("name", "") or mid
+        if q not in mid.lower() and q not in mname.lower():
+            continue
+        pricing = m.get("pricing") or {}
+        out.append({
+            "id": mid,
+            "name": mname,
+            "context": m.get("context_length"),
+            "prompt_price": pricing.get("prompt"),
+            "desc": m.get("description", "") or "",
+        })
+    out.sort(key=lambda r: r["id"])
+    return out[:200]
+
+
 # ---------------------------------------------------------------------------
 # JSON config generation.
 # ---------------------------------------------------------------------------
@@ -368,7 +418,8 @@ def search_ollama_models(query, vram_mib=None):
 def build_config(categories, plugin_states, plugin_toggles, plugins_add,
                  extra_pacman, extra_aur, category_order,
                  configured_pkg_toggles=None, packages_data=None,
-                 confirm_close=None, ollama_install=None, ollama_models=None):
+                 confirm_close=None, ollama_install=None, ollama_models=None,
+                 hermes=None):
     """Build the JSON config dict from wizard state.
 
     categories       — dict {name: bool}
@@ -383,6 +434,7 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
     confirm_close    — bool or None (SUPER+W confirm-close feature)
     ollama_install   — bool or None (Ollama + GPU models feature)
     ollama_models    — list of model tags to pull, or None
+    hermes           — dict or None (Hermes Agent options; see apply_hermes)
     """
     selected = [c for c in category_order if categories.get(c, False)]
 
@@ -432,6 +484,10 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
     if ollama_install and ollama_models is not None:
         result["ollama_models"] = sorted(ollama_models)
 
+    # Hermes Agent options.
+    if hermes is not None:
+        result["hermes"] = hermes
+
     return result
 
 
@@ -457,7 +513,11 @@ def default_config(setup_dir):
     return build_config(
         categories, states, toggles, plugins_add, set(), set(),
         category_order, pkg_toggles, pkgs,
-        confirm_close=True, ollama_install=True, ollama_models=["qwen2.5:3b"]
+        confirm_close=True, ollama_install=True, ollama_models=["qwen2.5:3b"],
+        hermes={"install": True, "desktop": False, "web": False,
+                "web_port": 9119, "provider": "openrouter",
+                "api_key": "", "base_url": "https://openrouter.ai/api/v1",
+                "model": ""},
     )
 
 
@@ -474,6 +534,7 @@ class WizardApp(Adw.Application):
         "Plugins",
         "Packages",
         "GPU Models",
+        "Hermes Agent",
         "Review & Save",
     ]
 
@@ -527,6 +588,20 @@ class WizardApp(Adw.Application):
         self._model_search_pulse_id = 0
         self._model_search_progress = None
 
+        # Hermes Agent state (defaults match apply_hermes / default_config).
+        self.hermes_enabled = True
+        self.hermes_desktop = False
+        self.hermes_web = False
+        self.hermes_web_port = "9119"
+        self.hermes_add_provider = True
+        self.hermes_provider_idx = 0  # OpenRouter
+        self.hermes_api_key = ""
+        self.hermes_model = ""
+        self._hermes_model_search_serial = 0
+        self._hermes_model_search_timeout_id = 0
+        self._hermes_model_search_pulse_id = 0
+        self._hermes_model_search_progress = None
+
         # Initialize plugin toggles from current state.
         for pid, state in self.plugin_states.items():
             self.plugin_toggles[pid] = state.get("enabled", False)
@@ -578,6 +653,7 @@ class WizardApp(Adw.Application):
             self._build_plugins_page(),
             self._build_packages_page(),
             self._build_gpu_models_page(),
+            self._build_hermes_page(),
             self._build_review_page(),
         ]
         for i, page in enumerate(self.pages):
@@ -639,8 +715,9 @@ class WizardApp(Adw.Application):
             self.next_btn.set_label("Next")
             self.nav_apply_btn.set_visible(False)
         self.stack.set_visible_child_name(f"page-{self.current_page}")
-        # Sync the ollama-off notice on the GPU Models page.
-        gpu_page_idx = total - 2  # page before review
+        # Sync the ollama-off notice on the GPU Models page. The Hermes Agent
+        # page now sits between GPU Models and Review, so GPU is total - 3.
+        gpu_page_idx = total - 3
         if self.current_page == gpu_page_idx and hasattr(self, "_gpu_ollama_notice"):
             self._gpu_ollama_notice.set_visible(not self.ollama_enabled)
         # Refresh review page when entering it.
@@ -1608,7 +1685,381 @@ class WizardApp(Adw.Application):
             self.ollama_models_to_pull.remove(tag)
         self.selected_models_box.remove(chip_box)
 
-    # --- page 5: review ---
+    # --- page 5: hermes ---
+
+    def _build_hermes_page(self):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_hexpand(True)
+        scroll.set_vexpand(True)
+        scroll.add_css_class("om-scrolled")
+
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                       valign=Gtk.Align.START)
+        page.add_css_class("om-page")
+
+        title = Gtk.Label(label="Hermes Agent")
+        title.add_css_class("om-title")
+        title.set_xalign(0)
+        page.append(title)
+
+        subtitle = Gtk.Label(
+            label="Install Hermes Agent (CLI + Ink TUI) and enable the "
+                  "optional desktop app, web dashboard, an AI provider "
+                  "(default OpenRouter) with API key, and a default model."
+        )
+        subtitle.add_css_class("om-subtitle")
+        subtitle.set_xalign(0)
+        subtitle.set_wrap(True)
+        page.append(subtitle)
+
+        # Notice shown when the install toggle is off.
+        self._hermes_install_notice = Gtk.Label(
+            label="⚠ Hermes Agent install is toggled off. Enable it above "
+                  "to apply the options below."
+        )
+        self._hermes_install_notice.add_css_class("om-subtitle")
+        self._hermes_install_notice.set_xalign(0)
+        self._hermes_install_notice.set_wrap(True)
+        self._hermes_install_notice.set_visible(not self.hermes_enabled)
+        page.append(self._hermes_install_notice)
+
+        # --- card: install options ---
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.add_css_class("om-card")
+
+        inst_row = self._make_toggle_row(
+            "Install Hermes Agent",
+            "Installs the agent + Ink TUI via the official installer "
+            "(idempotent; skips if already installed).",
+            self.hermes_enabled)
+        inst_row.switch_widget.connect(
+            "notify::active", self._on_hermes_install_toggle)
+        self._hermes_inst_switch = inst_row.switch_widget
+        card.append(inst_row)
+
+        desk_row = self._make_toggle_row(
+            "Desktop application",
+            "Installs the Hermes desktop app (AUR: hermes-desktop).",
+            self.hermes_desktop)
+        desk_row.switch_widget.connect(
+            "notify::active", self._on_hermes_desktop_toggle)
+        self._hermes_desk_switch = desk_row.switch_widget
+        card.append(desk_row)
+
+        web_row = self._make_toggle_row(
+            "Web server interface",
+            "Enables the Hermes dashboard as a systemd user service "
+            "(hermes-studio) on 127.0.0.1.",
+            self.hermes_web)
+        web_row.switch_widget.connect(
+            "notify::active", self._on_hermes_web_toggle)
+        self._hermes_web_switch = web_row.switch_widget
+        card.append(web_row)
+
+        # Port entry row.
+        port_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        port_box.add_css_class("om-row")
+        port_lbl = Gtk.Label(label="Dashboard port")
+        port_lbl.add_css_class("om-row-name")
+        port_lbl.set_xalign(0)
+        port_lbl.set_hexpand(True)
+        self.hermes_port_entry = Gtk.Entry()
+        self.hermes_port_entry.set_text(str(self.hermes_web_port))
+        self.hermes_port_entry.set_width_chars(8)
+        self.hermes_port_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        self.hermes_port_entry.connect("changed", self._on_hermes_port_changed)
+        port_box.append(port_lbl)
+        port_box.append(self.hermes_port_entry)
+        card.append(port_box)
+
+        page.append(card)
+
+        # --- card: AI provider ---
+        prov_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        prov_card.add_css_class("om-card")
+        prov_card.set_margin_top(12)
+
+        pheader = Gtk.Label(label="AI Provider")
+        pheader.add_css_class("om-group-header")
+        pheader.set_xalign(0)
+        prov_card.append(pheader)
+
+        prov_row = self._make_toggle_row(
+            "Add AI provider + API key",
+            "Pick a provider (default OpenRouter) and save its API key to "
+            "~/.hermes/.env (0600).",
+            self.hermes_add_provider)
+        prov_row.switch_widget.connect(
+            "notify::active", self._on_hermes_add_provider_toggle)
+        self._hermes_prov_switch = prov_row.switch_widget
+        prov_card.append(prov_row)
+
+        # Provider dropdown + API key entry; visibility tracks the toggle.
+        self._hermes_prov_details = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self._hermes_prov_details.set_margin_top(8)
+
+        dd_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        dd_lbl = Gtk.Label(label="Provider")
+        dd_lbl.add_css_class("om-row-name")
+        dd_lbl.set_xalign(0)
+        dd_lbl.set_hexpand(True)
+        sl = Gtk.StringList.new([lbl for _, lbl, _ in HERMES_PROVIDERS])
+        self.hermes_provider_dd = Gtk.DropDown(model=sl)
+        self.hermes_provider_dd.set_selected(self.hermes_provider_idx)
+        self.hermes_provider_dd.connect(
+            "notify::selected", self._on_hermes_provider_changed)
+        dd_box.append(dd_lbl)
+        dd_box.append(self.hermes_provider_dd)
+        self._hermes_prov_details.append(dd_box)
+
+        key_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        key_lbl = Gtk.Label(label="API key")
+        key_lbl.add_css_class("om-row-name")
+        key_lbl.set_xalign(0)
+        key_lbl.set_hexpand(True)
+        self.hermes_key_entry = Gtk.PasswordEntry()
+        self.hermes_key_entry.set_show_peek_icon(True)
+        self.hermes_key_entry.set_placeholder_text("sk-…")
+        self.hermes_key_entry.set_text(self.hermes_api_key)
+        self.hermes_key_entry.connect("changed", self._on_hermes_key_changed)
+        key_box.append(key_lbl)
+        key_box.append(self.hermes_key_entry)
+        self._hermes_prov_details.append(key_box)
+
+        self._hermes_prov_details.set_visible(self.hermes_add_provider)
+        prov_card.append(self._hermes_prov_details)
+        page.append(prov_card)
+
+        # --- card: default model ---
+        model_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        model_card.add_css_class("om-card")
+        model_card.set_margin_top(12)
+
+        mheader = Gtk.Label(label="Default Model")
+        mheader.add_css_class("om-group-header")
+        mheader.set_xalign(0)
+        model_card.append(mheader)
+
+        self.hermes_model_entry = Gtk.Entry()
+        self.hermes_model_entry.set_placeholder_text(
+            "e.g. deepseek/deepseek-v4.1-flash")
+        self.hermes_model_entry.set_text(self.hermes_model)
+        self.hermes_model_entry.set_hexpand(True)
+        self.hermes_model_entry.connect(
+            "changed", self._on_hermes_model_entry_changed)
+        model_card.append(self.hermes_model_entry)
+
+        note = Gtk.Label(
+            label="Leave blank to choose later with 'hermes model --refresh'. "
+                  "Search OpenRouter's public catalog below to find a tag."
+        )
+        note.add_css_class("om-row-desc")
+        note.set_xalign(0)
+        note.set_wrap(True)
+        model_card.append(note)
+        page.append(model_card)
+
+        # Search row + results.
+        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        search_row.set_margin_top(8)
+        search = Gtk.SearchEntry(placeholder_text="Search OpenRouter models…")
+        search.add_css_class("om-search")
+        search.set_hexpand(True)
+        search.connect("activate", self._on_hermes_model_search)
+        self.hermes_model_search = search
+
+        sbtn = Gtk.Button(label="Search")
+        sbtn.add_css_class("om-nav-btn")
+        sbtn.connect("clicked", self._on_hermes_model_search)
+        search_row.append(search)
+        search_row.append(sbtn)
+        page.append(search_row)
+
+        self.hermes_model_listbox = Gtk.ListBox()
+        self.hermes_model_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.hermes_model_listbox.add_css_class("om-card")
+        page.append(self.hermes_model_listbox)
+
+        scroll.set_child(page)
+        return scroll
+
+    def _on_hermes_install_toggle(self, switch, _pspec):
+        self.hermes_enabled = switch.get_active()
+        if hasattr(self, "_hermes_install_notice"):
+            self._hermes_install_notice.set_visible(not self.hermes_enabled)
+
+    def _on_hermes_desktop_toggle(self, switch, _pspec):
+        self.hermes_desktop = switch.get_active()
+
+    def _on_hermes_web_toggle(self, switch, _pspec):
+        self.hermes_web = switch.get_active()
+
+    def _on_hermes_port_changed(self, entry):
+        self.hermes_web_port = entry.get_text().strip()
+
+    def _on_hermes_add_provider_toggle(self, switch, _pspec):
+        self.hermes_add_provider = switch.get_active()
+        if hasattr(self, "_hermes_prov_details"):
+            self._hermes_prov_details.set_visible(self.hermes_add_provider)
+
+    def _on_hermes_provider_changed(self, dd, _pspec):
+        self.hermes_provider_idx = dd.get_selected()
+
+    def _on_hermes_key_changed(self, entry):
+        self.hermes_api_key = entry.get_text()
+
+    def _on_hermes_model_entry_changed(self, entry):
+        self.hermes_model = entry.get_text().strip()
+
+    def _hermes_config(self):
+        """Build the .hermes config dict for build_config / apply.sh --myconfig."""
+        slug, _, base_url = HERMES_PROVIDERS[self.hermes_provider_idx]
+        if not self.hermes_add_provider:
+            slug, base_url = "false", ""
+        elif slug == "wizard":
+            base_url = ""
+        try:
+            port = int(self.hermes_web_port)
+        except (ValueError, TypeError):
+            port = 9119
+        return {
+            "install": self.hermes_enabled,
+            "desktop": self.hermes_desktop,
+            "web": self.hermes_web,
+            "web_port": port,
+            "provider": slug,
+            "api_key": self.hermes_api_key if self.hermes_add_provider else "",
+            "base_url": base_url,
+            "model": self.hermes_model,
+        }
+
+    def _on_hermes_model_search(self, _widget):
+        query = self.hermes_model_search.get_text().strip()
+        if not query:
+            return
+        self._hermes_model_search_serial += 1
+        serial = self._hermes_model_search_serial
+        self._cancel_hermes_model_search_timers()
+
+        self._clear_pkg_children(self.hermes_model_listbox)
+        loading = Gtk.Label(label="Searching…")
+        loading.add_css_class("om-subtitle")
+        self.hermes_model_listbox.append(loading)
+
+        self._hermes_model_search_timeout_id = GLib.timeout_add(
+            3000, self._on_hermes_model_search_timeout, serial)
+
+        threading.Thread(
+            target=self._hermes_model_search_worker,
+            args=(query, serial),
+            daemon=True,
+        ).start()
+
+    def _hermes_model_search_worker(self, query, serial):
+        results = search_openrouter_models(query)
+        GLib.idle_add(self._on_hermes_model_search_complete, results, serial)
+
+    def _on_hermes_model_search_timeout(self, serial):
+        self._hermes_model_search_timeout_id = 0
+        if serial != self._hermes_model_search_serial:
+            return False
+        progress = Gtk.ProgressBar(pulse_step=0.3)
+        progress.add_css_class("om-search-progress")
+        progress.set_text("Searching OpenRouter catalog…")
+        progress.set_show_text(True)
+        progress.pulse()
+        self.hermes_model_listbox.append(progress)
+        self._hermes_model_search_progress = progress
+        self._hermes_model_search_pulse_id = GLib.timeout_add(
+            400, self._pulse_hermes_model_progress, serial)
+        return False
+
+    def _pulse_hermes_model_progress(self, serial):
+        if serial != self._hermes_model_search_serial \
+                or self._hermes_model_search_progress is None:
+            self._hermes_model_search_pulse_id = 0
+            return False
+        self._hermes_model_search_progress.pulse()
+        return True
+
+    def _on_hermes_model_search_complete(self, results, serial):
+        if serial != self._hermes_model_search_serial:
+            return False
+        self._cancel_hermes_model_search_timers()
+        self._clear_pkg_children(self.hermes_model_listbox)
+        self._hermes_model_search_progress = None
+
+        if not results:
+            empty = Gtk.Label(label="No models found.")
+            empty.add_css_class("om-subtitle")
+            self.hermes_model_listbox.append(empty)
+            return False
+
+        for model in results:
+            self.hermes_model_listbox.append(self._make_hermes_model_row(model))
+        return False
+
+    def _cancel_hermes_model_search_timers(self):
+        if self._hermes_model_search_timeout_id:
+            GLib.source_remove(self._hermes_model_search_timeout_id)
+            self._hermes_model_search_timeout_id = 0
+        if self._hermes_model_search_pulse_id:
+            GLib.source_remove(self._hermes_model_search_pulse_id)
+            self._hermes_model_search_pulse_id = 0
+
+    def _make_hermes_model_row(self, model):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        row.add_css_class("om-row")
+
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        left.set_hexpand(True)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        name_lbl = Gtk.Label(label=model["name"])
+        name_lbl.add_css_class("om-row-name")
+        name_lbl.set_xalign(0)
+        top.append(name_lbl)
+
+        ctx = model.get("context")
+        if ctx:
+            cb = Gtk.Label(label=f"{ctx // 1000}k ctx")
+            cb.add_css_class("om-badge-kind")
+            top.append(cb)
+        left.append(top)
+
+        id_lbl = Gtk.Label(label=model["id"])
+        id_lbl.add_css_class("om-row-id")
+        id_lbl.set_xalign(0)
+        left.append(id_lbl)
+
+        row.append(left)
+
+        if model["id"] == self.hermes_model:
+            check = Gtk.Label(label="✓ selected")
+            check.add_css_class("om-success")
+            check.set_valign(Gtk.Align.CENTER)
+            row.append(check)
+        else:
+            add = Gtk.Button(label="Use")
+            add.add_css_class("om-helper-btn")
+            add.set_valign(Gtk.Align.CENTER)
+            add.connect("clicked", self._on_use_hermes_model, model["id"], row)
+            row.append(add)
+        return row
+
+    def _on_use_hermes_model(self, _btn, model_id, row):
+        self.hermes_model = model_id
+        self.hermes_model_entry.set_text(model_id)
+        last = row.get_last_child()
+        if last:
+            row.remove(last)
+        check = Gtk.Label(label="✓ selected")
+        check.add_css_class("om-success")
+        check.set_valign(Gtk.Align.CENTER)
+        row.append(check)
+
+    # --- page 6: review ---
 
     def _build_review_page(self):
         scroll = Gtk.ScrolledWindow()
@@ -1668,6 +2119,7 @@ class WizardApp(Adw.Application):
             confirm_close=self.confirm_close_enabled,
             ollama_install=self.ollama_enabled,
             ollama_models=self.ollama_models_to_pull,
+            hermes=self._hermes_config(),
         )
 
         # Categories section.
@@ -1693,6 +2145,28 @@ class WizardApp(Adw.Application):
             self._add_review_label("Ollama models to pull", bold=True, margin_top=12)
             for tag in config["ollama_models"]:
                 self._add_review_item(f"  {tag}")
+
+        # Hermes Agent section.
+        if config.get("hermes"):
+            h = config["hermes"]
+            self._add_review_label("Hermes Agent", bold=True, margin_top=12)
+            self._add_review_item(
+                f"Install: {'✓ enabled' if h.get('install') else '✗ disabled'}")
+            self._add_review_item(
+                f"Desktop app: {'✓ enabled' if h.get('desktop') else '✗ disabled'}")
+            self._add_review_item(
+                f"Web UI: {'✓ enabled (127.0.0.1:' + str(h.get('web_port')) + ')' if h.get('web') else '✗ disabled'}")
+            prov = h.get("provider") or ""
+            if prov in ("false", ""):
+                self._add_review_item("AI provider: skipped")
+            elif prov == "wizard":
+                self._add_review_item("AI provider: other (interactive wizard)")
+            else:
+                self._add_review_item(
+                    f"AI provider: {prov}"
+                    f"{' + API key set' if h.get('api_key') else ' (no key set)'}")
+            self._add_review_item(
+                f"Default model: {h.get('model') or '(choose later with hermes model)'}")
 
         # Plugins section.
         self._add_review_label("Plugin changes", bold=True, margin_top=12)
@@ -1771,6 +2245,7 @@ class WizardApp(Adw.Application):
             confirm_close=self.confirm_close_enabled,
             ollama_install=self.ollama_enabled,
             ollama_models=self.ollama_models_to_pull,
+            hermes=self._hermes_config(),
         )
 
         dialog = Gtk.FileDialog()
