@@ -1884,7 +1884,7 @@ class WizardApp(Adw.Application):
         key_lbl.set_hexpand(True)
         self.hermes_key_entry = Gtk.PasswordEntry()
         self.hermes_key_entry.set_show_peek_icon(True)
-        self.hermes_key_entry.set_placeholder_text("sk-…")
+        self.hermes_key_entry.props.placeholder_text = "sk-…"
         self.hermes_key_entry.set_text(self.hermes_api_key)
         self.hermes_key_entry.connect("changed", self._on_hermes_key_changed)
         key_box.append(key_lbl)
@@ -2231,7 +2231,7 @@ class WizardApp(Adw.Application):
         key_lbl.set_hexpand(True)
         self.voice_key_entry = Gtk.PasswordEntry()
         self.voice_key_entry.set_show_peek_icon(True)
-        self.voice_key_entry.set_placeholder_text("sk-…")
+        self.voice_key_entry.props.placeholder_text = "sk-…"
         self.voice_key_entry.set_text(self.voice_api_key)
         self.voice_key_entry.connect("changed", self._on_voice_key_changed)
         key_box.append(key_lbl)
