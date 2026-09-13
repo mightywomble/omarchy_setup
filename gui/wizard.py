@@ -410,6 +410,14 @@ def search_openrouter_models(query):
     return out[:200]
 
 
+# Omarchy Voice engine menu (slug, label). Mirrors apply_voice; Realtime is
+# the project default, Live needs separate model access (see docs/live.md).
+VOICE_ENGINES = [
+    ("realtime", "Realtime (default; speech to speech)"),
+    ("live", "Live (separate Responses backend; needs model access)"),
+]
+
+
 # ---------------------------------------------------------------------------
 # JSON config generation.
 # ---------------------------------------------------------------------------
@@ -419,7 +427,7 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
                  extra_pacman, extra_aur, category_order,
                  configured_pkg_toggles=None, packages_data=None,
                  confirm_close=None, ollama_install=None, ollama_models=None,
-                 electron_keyring_fix=None, hermes=None):
+                 electron_keyring_fix=None, hermes=None, voice=None):
     """Build the JSON config dict from wizard state.
 
     categories       — dict {name: bool}
@@ -437,6 +445,7 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
     electron_keyring_fix — bool or None (write --password-store=gnome-libsecret
                        flags for VS Code + Element; see apply_electron_keyring_fix)
     hermes           — dict or None (Hermes Agent options; see apply_hermes)
+    voice            — dict or None (Omarchy Voice options; see apply_voice)
     """
     selected = [c for c in category_order if categories.get(c, False)]
 
@@ -492,6 +501,10 @@ def build_config(categories, plugin_states, plugin_toggles, plugins_add,
     if hermes is not None:
         result["hermes"] = hermes
 
+    # Omarchy Voice options.
+    if voice is not None:
+        result["voice"] = voice
+
     return result
 
 
@@ -523,6 +536,8 @@ def default_config(setup_dir):
                 "web_port": 9119, "provider": "openrouter",
                 "api_key": "", "base_url": "https://openrouter.ai/api/v1",
                 "model": ""},
+        voice={"install": True, "bar_widget": True, "service": True,
+               "keybinding": True, "engine": "realtime", "api_key": ""},
     )
 
 
@@ -540,6 +555,7 @@ class WizardApp(Adw.Application):
         "Packages",
         "GPU Models",
         "Hermes Agent",
+        "Omarchy Voice",
         "Review & Save",
     ]
 
@@ -608,6 +624,14 @@ class WizardApp(Adw.Application):
         self._hermes_model_search_pulse_id = 0
         self._hermes_model_search_progress = None
 
+        # Omarchy Voice state (defaults match apply_voice / default_config).
+        self.voice_enabled = True
+        self.voice_bar_widget = True
+        self.voice_service = True
+        self.voice_keybinding = True
+        self.voice_engine_idx = 0  # Realtime
+        self.voice_api_key = ""
+
         # Initialize plugin toggles from current state.
         for pid, state in self.plugin_states.items():
             self.plugin_toggles[pid] = state.get("enabled", False)
@@ -660,6 +684,7 @@ class WizardApp(Adw.Application):
             self._build_packages_page(),
             self._build_gpu_models_page(),
             self._build_hermes_page(),
+            self._build_voice_page(),
             self._build_review_page(),
         ]
         for i, page in enumerate(self.pages):
@@ -722,8 +747,9 @@ class WizardApp(Adw.Application):
             self.nav_apply_btn.set_visible(False)
         self.stack.set_visible_child_name(f"page-{self.current_page}")
         # Sync the ollama-off notice on the GPU Models page. The Hermes Agent
-        # page now sits between GPU Models and Review, so GPU is total - 3.
-        gpu_page_idx = total - 3
+        # and Omarchy Voice pages now sit between GPU Models and Review, so
+        # GPU is total - 4.
+        gpu_page_idx = total - 4
         if self.current_page == gpu_page_idx and hasattr(self, "_gpu_ollama_notice"):
             self._gpu_ollama_notice.set_visible(not self.ollama_enabled)
         # Refresh review page when entering it.
@@ -861,6 +887,17 @@ class WizardApp(Adw.Application):
         self._ek_switch = ek_switch
         card.append(ek_row)
 
+        # Omarchy Voice enable/disable toggle (master switch).
+        ov_row = self._make_toggle_row(
+            "Omarchy Voice",
+            "Installs Omarchy Voice (voice control for Omarchy). Configure the "
+            "OpenAI key and installer options on the Omarchy Voice page.",
+            self.voice_enabled)
+        ov_switch = ov_row.switch_widget
+        ov_switch.connect("notify::active", self._on_voice_toggle)
+        self._ov_switch = ov_switch
+        card.append(ov_row)
+
         return card
 
     def _on_confirm_close_toggle(self, switch, _pspec):
@@ -871,6 +908,11 @@ class WizardApp(Adw.Application):
 
     def _on_electron_keyring_toggle(self, switch, _pspec):
         self.electron_keyring_fix_enabled = switch.get_active()
+
+    def _on_voice_toggle(self, switch, _pspec):
+        self.voice_enabled = switch.get_active()
+        if hasattr(self, "_voice_install_notice"):
+            self._voice_install_notice.set_visible(not self.voice_enabled)
 
     def _set_all_categories(self, val):
         for name, sw in self.category_switches.items():
@@ -2081,7 +2123,166 @@ class WizardApp(Adw.Application):
         check.set_valign(Gtk.Align.CENTER)
         row.append(check)
 
-    # --- page 6: review ---
+    # --- page 6: voice ---
+
+    def _build_voice_page(self):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_hexpand(True)
+        scroll.set_vexpand(True)
+        scroll.add_css_class("om-scrolled")
+
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                       valign=Gtk.Align.START)
+        page.add_css_class("om-page")
+
+        title = Gtk.Label(label="Omarchy Voice")
+        title.add_css_class("om-title")
+        title.set_xalign(0)
+        page.append(title)
+
+        subtitle = Gtk.Label(
+            label="Voice control for the Omarchy desktop. OpenAI handles "
+                  "speech and planning; local tools carry out desktop actions "
+                  "through a policy gate. Add your OpenAI API key and choose "
+                  "installer options below."
+        )
+        subtitle.add_css_class("om-subtitle")
+        subtitle.set_xalign(0)
+        subtitle.set_wrap(True)
+        page.append(subtitle)
+
+        # Notice shown when the install toggle is off (set on the Defaults page).
+        self._voice_install_notice = Gtk.Label(
+            label="⚠ Omarchy Voice is toggled off on the Defaults page. "
+                  "Enable it there to apply the options below."
+        )
+        self._voice_install_notice.add_css_class("om-subtitle")
+        self._voice_install_notice.set_xalign(0)
+        self._voice_install_notice.set_wrap(True)
+        self._voice_install_notice.set_visible(not self.voice_enabled)
+        page.append(self._voice_install_notice)
+
+        # --- card: installer options ---
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.add_css_class("om-card")
+
+        bar_row = self._make_toggle_row(
+            "Bar widget",
+            "Installs the voice.indicator bar widget plugin and places it "
+            "on the right section.",
+            self.voice_bar_widget)
+        bar_row.switch_widget.connect(
+            "notify::active", self._on_voice_bar_toggle)
+        self._voice_bar_switch = bar_row.switch_widget
+        card.append(bar_row)
+
+        svc_row = self._make_toggle_row(
+            "Systemd user service",
+            "Installs and enables omarchy-voice.service (starts with your "
+            "session). The installer enables but does not start it; apply "
+            "starts it too.",
+            self.voice_service)
+        svc_row.switch_widget.connect(
+            "notify::active", self._on_voice_service_toggle)
+        self._voice_svc_switch = svc_row.switch_widget
+        card.append(svc_row)
+
+        kb_row = self._make_toggle_row(
+            "Keybinding (SUPER + SHIFT + V)",
+            "Appends a guarded binding to ~/.config/hypr/bindings.lua to "
+            "toggle voice listening. Backs up the file first.",
+            self.voice_keybinding)
+        kb_row.switch_widget.connect(
+            "notify::active", self._on_voice_keybinding_toggle)
+        self._voice_kb_switch = kb_row.switch_widget
+        card.append(kb_row)
+
+        page.append(card)
+
+        # --- card: engine + API key ---
+        eng_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        eng_card.add_css_class("om-card")
+        eng_card.set_margin_top(12)
+
+        eheader = Gtk.Label(label="Engine & API Key")
+        eheader.add_css_class("om-group-header")
+        eheader.set_xalign(0)
+        eng_card.append(eheader)
+
+        dd_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        dd_lbl = Gtk.Label(label="Voice engine")
+        dd_lbl.add_css_class("om-row-name")
+        dd_lbl.set_xalign(0)
+        dd_lbl.set_hexpand(True)
+        sl = Gtk.StringList.new([lbl for _, lbl in VOICE_ENGINES])
+        self.voice_engine_dd = Gtk.DropDown(model=sl)
+        self.voice_engine_dd.set_selected(self.voice_engine_idx)
+        self.voice_engine_dd.connect(
+            "notify::selected", self._on_voice_engine_changed)
+        dd_box.append(dd_lbl)
+        dd_box.append(self.voice_engine_dd)
+        eng_card.append(dd_box)
+
+        key_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        key_box.set_margin_top(8)
+        key_lbl = Gtk.Label(label="OpenAI API key")
+        key_lbl.add_css_class("om-row-name")
+        key_lbl.set_xalign(0)
+        key_lbl.set_hexpand(True)
+        self.voice_key_entry = Gtk.PasswordEntry()
+        self.voice_key_entry.set_show_peek_icon(True)
+        self.voice_key_entry.set_placeholder_text("sk-…")
+        self.voice_key_entry.set_text(self.voice_api_key)
+        self.voice_key_entry.connect("changed", self._on_voice_key_changed)
+        key_box.append(key_lbl)
+        key_box.append(self.voice_key_entry)
+        eng_card.append(key_box)
+
+        note = Gtk.Label(
+            label="While listening is on, room audio streams continuously to "
+                  "OpenAI (billed to your account). Toggling off stops the "
+                  "recorder, so nothing is captured while muted. The key is "
+                  "written to ~/.config/omarchy-voice/env (mode 600)."
+        )
+        note.add_css_class("om-row-desc")
+        note.set_xalign(0)
+        note.set_wrap(True)
+        note.set_margin_top(8)
+        eng_card.append(note)
+
+        page.append(eng_card)
+
+        scroll.set_child(page)
+        return scroll
+
+    def _on_voice_bar_toggle(self, switch, _pspec):
+        self.voice_bar_widget = switch.get_active()
+
+    def _on_voice_service_toggle(self, switch, _pspec):
+        self.voice_service = switch.get_active()
+
+    def _on_voice_keybinding_toggle(self, switch, _pspec):
+        self.voice_keybinding = switch.get_active()
+
+    def _on_voice_engine_changed(self, dd, _pspec):
+        self.voice_engine_idx = dd.get_selected()
+
+    def _on_voice_key_changed(self, entry):
+        self.voice_api_key = entry.get_text()
+
+    def _voice_config(self):
+        """Build the .voice config dict for build_config / apply.sh --myconfig."""
+        engine, _ = VOICE_ENGINES[self.voice_engine_idx]
+        return {
+            "install": self.voice_enabled,
+            "bar_widget": self.voice_bar_widget,
+            "service": self.voice_service,
+            "keybinding": self.voice_keybinding,
+            "engine": engine,
+            "api_key": self.voice_api_key,
+        }
+
+    # --- page 7: review ---
 
     def _build_review_page(self):
         scroll = Gtk.ScrolledWindow()
@@ -2143,6 +2344,7 @@ class WizardApp(Adw.Application):
             ollama_models=self.ollama_models_to_pull,
             electron_keyring_fix=self.electron_keyring_fix_enabled,
             hermes=self._hermes_config(),
+            voice=self._voice_config(),
         )
 
         # Categories section.
@@ -2194,6 +2396,22 @@ class WizardApp(Adw.Application):
                     f"{' + API key set' if h.get('api_key') else ' (no key set)'}")
             self._add_review_item(
                 f"Default model: {h.get('model') or '(choose later with hermes model)'}")
+
+        # Omarchy Voice section.
+        if config.get("voice"):
+            v = config["voice"]
+            self._add_review_label("Omarchy Voice", bold=True, margin_top=12)
+            self._add_review_item(
+                f"Install: {'✓ enabled' if v.get('install') else '✗ disabled'}")
+            self._add_review_item(
+                f"Bar widget: {'✓ enabled' if v.get('bar_widget') else '✗ disabled'}")
+            self._add_review_item(
+                f"Systemd service: {'✓ enabled' if v.get('service') else '✗ disabled'}")
+            self._add_review_item(
+                f"Keybinding (SUPER+SHIFT+V): {'✓ enabled' if v.get('keybinding') else '✗ disabled'}")
+            self._add_review_item(
+                f"Engine: {v.get('engine') or 'realtime'}"
+                f"{' + API key set' if v.get('api_key') else ' (no key set)'}")
 
         # Plugins section.
         self._add_review_label("Plugin changes", bold=True, margin_top=12)
@@ -2274,6 +2492,7 @@ class WizardApp(Adw.Application):
             ollama_models=self.ollama_models_to_pull,
             electron_keyring_fix=self.electron_keyring_fix_enabled,
             hermes=self._hermes_config(),
+            voice=self._voice_config(),
         )
 
         dialog = Gtk.FileDialog()

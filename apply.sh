@@ -25,12 +25,14 @@
 #   gpu          install Ollama (CUDA/NVIDIA) + a small GPU model
 #   hermes       install Hermes Agent (CLI + TUI) + optional desktop / web /
 #                AI-provider (default OpenRouter) + model selection
+#   voice        install Omarchy Voice (voice control) + OpenAI key +
+#                bar widget / systemd service / keybinding + engine choice
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 FILES_DIR="$SCRIPT_DIR/files"
 
-CATEGORIES=(packages install webapps plugins theme gloview hyprland keybindings dotfiles barconfig gpu hermes)
+CATEGORIES=(packages install webapps plugins theme gloview hyprland keybindings dotfiles barconfig gpu hermes voice)
 
 info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$1" >&2; }
@@ -49,6 +51,7 @@ describe() {
     barconfig)   echo "Apply bar/plugin layout (shell.json)" ;;
     gpu)         echo "Install Ollama (CUDA/NVIDIA) + a small GPU model" ;;
     hermes)      echo "Install Hermes Agent (CLI + TUI) + optional desktop/web/provider/model" ;;
+    voice)       echo "Install Omarchy Voice + OpenAI key, bar widget, service, keybinding, engine" ;;
   esac
 }
 
@@ -586,6 +589,98 @@ apply_hermes() {
   [[ "$enable_web" == "true" ]] && echo "  Web UI: http://127.0.0.1:$web_port/  (systemctl --user status hermes-studio)"
 }
 
+# ------------------------------------------------------------------ voice --
+# Omarchy Voice (https://github.com/wombatoperator/omarchy-voice). Voice
+# control for the Omarchy desktop: OpenAI Realtime/Live speech → local desktop
+# tools through a policy gate. This function clones the repo into
+# ~/code/github/omarchy-voice, pre-installs python-websockets so the
+# installer's pacman prompt doesn't fire, then drives the installer
+# non-interactively with piped answers and writes the OpenAI key.
+
+# voice_env_set KEY VALUE — write/update KEY=VALUE in ~/.config/omarchy-voice/env
+# (mode 600), mirroring hermes_env_set.
+voice_env_set() {
+  local key="$1" val="$2" env_file="$HOME/.config/omarchy-voice/env" esc
+  mkdir -p "$(dirname "$env_file")"
+  [[ -f "$env_file" ]] || { touch "$env_file"; chmod 600 "$env_file"; }
+  esc=$(printf '%s' "$val" | sed -e 's/[\/&|]/\\&/g')
+  if grep -qE "^${key}=" "$env_file"; then
+    sed -i -E "s|^${key}=.*|${key}=${esc}|" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$env_file"
+  fi
+  chmod 600 "$env_file"
+}
+
+apply_voice() {
+  info "Installing Omarchy Voice (voice control)"
+  if [[ "${CONFIG_VOICE_INSTALL:-true}" == "false" ]]; then
+    echo "  omarchy-voice disabled in config, skipping"
+    return
+  fi
+  # 1. Clone (or update) the repo. No GitHub releases/tags exist as of writing,
+  #    so "latest release" = main.
+  local clone_dir="$HOME/code/github/omarchy-voice"
+  mkdir -p "$(dirname "$clone_dir")"
+  if [[ -d "$clone_dir/.git" ]]; then
+    echo "  updating existing clone at $clone_dir"
+    git -C "$clone_dir" pull --ff-only 2>/dev/null || warn "failed to update $clone_dir (network?)"
+  else
+    echo "  cloning omarchy-voice into $clone_dir"
+    git clone --depth 1 https://github.com/wombatoperator/omarchy-voice.git "$clone_dir" \
+      || { warn "failed to clone omarchy-voice"; return; }
+  fi
+  # 2. Pre-install python-websockets so the installer's websockets prompt
+  #    doesn't fire. Refresh pacman sync dbs first if missing (a fresh machine
+  #    can have none, which makes pacman -S fail with "database ... does not
+  #    exist").
+  if ! python3 -c "import websockets" 2>/dev/null; then
+    if ! compgen -G "/var/lib/pacman/sync/*.db" >/dev/null 2>&1; then
+      sudo pacman -Sy || warn "failed to refresh pacman databases"
+    fi
+    sudo pacman -S --needed --noconfirm python-websockets \
+      || warn "failed to install python-websockets (the daemon needs it)"
+  fi
+  # 3. Drive the installer non-interactively. Its pacman-db and websockets
+  #    prompts are pre-handled above, so only the four integration prompts fire
+  #    (bar widget, /usr/bin commands, systemd service, keybinding). The
+  #    /usr/bin commands prompt is always answered "no" (keeps the install
+  #    user-local). Extra piped "no" answers are harmless on EOF.
+  local bar_widget="${CONFIG_VOICE_BAR_WIDGET:-true}"
+  local service="${CONFIG_VOICE_SERVICE:-true}"
+  local keybinding="${CONFIG_VOICE_KEYBINDING:-true}"
+  local bar_ans=n service_ans=n kb_ans=n
+  [[ "$bar_widget" == "true" ]] && bar_ans=y
+  [[ "$service" == "true" ]] && service_ans=y
+  [[ "$keybinding" == "true" ]] && kb_ans=y
+  echo "  running omarchy-voice installer (non-interactive)…"
+  printf '%s\nn\n%s\n%s\nn\nn\n' "$bar_ans" "$service_ans" "$kb_ans" \
+    | "$clone_dir/install.sh" || warn "omarchy-voice installer reported a failure (some steps may still have applied)"
+  # 4. OpenAI API key → ~/.config/omarchy-voice/env (mode 600).
+  local api_key="${CONFIG_VOICE_API_KEY:-}"
+  if [[ -n "$api_key" ]]; then
+    voice_env_set "OPENAI_API_KEY" "$api_key"
+    echo "  wrote OPENAI_API_KEY to ~/.config/omarchy-voice/env"
+  else
+    warn "OPENAI_API_KEY not set in config — add it to ~/.config/omarchy-voice/env"
+  fi
+  # 5. Engine choice (realtime default; live opt-in). The config is a
+  #    hand-edited TOML with no `config set` CLI, so sed the [openai] engine line.
+  local engine="${CONFIG_VOICE_ENGINE:-realtime}"
+  local cfg="$HOME/.config/omarchy-voice/config.toml"
+  if [[ "$engine" == "live" && -f "$cfg" ]]; then
+    sed -i -E 's|^engine *=.*|engine = "live"|' "$cfg"
+    echo "  engine set to 'live'"
+  fi
+  # 6. Start the service if enabled (the installer only enables it).
+  if [[ "$service" == "true" && -f "$HOME/.config/systemd/user/omarchy-voice.service" ]]; then
+    systemctl --user start omarchy-voice 2>/dev/null \
+      || warn "failed to start omarchy-voice service"
+  fi
+  echo "  Omarchy Voice ready — run 'omarchy-voice doctor' to verify"
+  [[ "$keybinding" == "true" ]] && echo "  Toggle listening: SUPER + SHIFT + V"
+}
+
 run_category() {
   case "$1" in
     packages)    apply_packages ;;
@@ -600,6 +695,7 @@ run_category() {
     barconfig)   apply_barconfig ;;
     gpu)         apply_gpu ;;
     hermes)      apply_hermes ;;
+    voice)       apply_voice ;;
     *) warn "unknown category: $1" ;;
   esac
 }
@@ -739,6 +835,18 @@ if [[ "$mode" == "myconfig" ]]; then
     export CONFIG_HERMES_API_KEY="$(jq -r '.hermes.api_key // ""' "$config_file")"
     export CONFIG_HERMES_BASE_URL="$(jq -r '.hermes.base_url // ""' "$config_file")"
     export CONFIG_HERMES_MODEL="$(jq -r '.hermes.model // ""' "$config_file")"
+  fi
+  # Omarchy Voice toggles (.voice object). Defaults: install on, bar widget /
+  # service / keybinding on, engine realtime, no key. The OpenAI key flows
+  # through the JSON into ~/.config/omarchy-voice/env (mode 600); don't commit
+  # a --myconfig JSON containing a real key.
+  if jq -e '.voice' "$config_file" >/dev/null 2>&1; then
+    export CONFIG_VOICE_INSTALL="$(jq -r 'if .voice.install == null then "true" else (.voice.install|tostring) end' "$config_file")"
+    export CONFIG_VOICE_BAR_WIDGET="$(jq -r 'if .voice.bar_widget == null then "true" else (.voice.bar_widget|tostring) end' "$config_file")"
+    export CONFIG_VOICE_SERVICE="$(jq -r 'if .voice.service == null then "true" else (.voice.service|tostring) end' "$config_file")"
+    export CONFIG_VOICE_KEYBINDING="$(jq -r 'if .voice.keybinding == null then "true" else (.voice.keybinding|tostring) end' "$config_file")"
+    export CONFIG_VOICE_ENGINE="$(jq -r '.voice.engine // "realtime"' "$config_file")"
+    export CONFIG_VOICE_API_KEY="$(jq -r '.voice.api_key // ""' "$config_file")"
   fi
   # Read selected categories from JSON, run them in fixed order.
   mapfile -t selected < <(jq -r '.categories[]?' "$config_file")
